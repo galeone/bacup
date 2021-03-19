@@ -13,6 +13,7 @@ async-trait = "0.1.48"
 chrono = "0.4.19"
 flate2 = "1.0.20"
 futures = "0.3.13"
+glob = "0.3.0"
 log = "0.4.14"
 rust-s3 = "0.26.4"
 serde = { version = "1.0.124", features = ["derive"] }

@@ -51,7 +51,7 @@ The goal of bacup is to make the configuration straightforward: a single file wh
 
 [folders]
     [folders.service1]
-    path = ""
+    pattern = ""
 
 # mapping services to remote
 [backup]

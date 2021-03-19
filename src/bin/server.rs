@@ -1,9 +1,11 @@
+use std::collections::HashMap;
 use std::env;
 use std::path::Path;
 
-use bacup::aws;
 use bacup::config::Config;
-use log::{error, info};
+use bacup::remotes::aws;
+use bacup::services::folders;
+use log::{error, info, warn};
 
 use structopt::StructOpt;
 
@@ -41,7 +43,7 @@ fn main() -> Result<(), i32> {
         return Err(-1);
     }
 
-    let config = match Config::read(path) {
+    let config = match Config::new(path) {
         Ok(config) => config,
         Err(error) => {
             error!("Config error: {}", error);
@@ -49,18 +51,31 @@ fn main() -> Result<(), i32> {
         }
     };
 
-    let mut clouds = std::collections::HashMap::new();
+    let mut remotes = HashMap::new();
 
     match config.aws {
         Some(aws) => {
             for (bucket_name, bucket_config) in aws {
-                clouds.insert(
+                remotes.insert(
                     format!("aws.{}", bucket_name),
                     aws::AWSBucket::new(bucket_config, &bucket_name).unwrap(),
                 );
             }
         }
-        None => info!("No AWS cloud configured."),
+        None => warn!("No AWS cloud configured."),
+    }
+
+    let mut services = HashMap::new();
+    match config.folders {
+        Some(folders) => {
+            for (location_name, folder) in folders {
+                services.insert(
+                    format!("folders.{}", location_name),
+                    folders::Folder::new(&folder.pattern).unwrap(),
+                );
+            }
+        }
+        None => warn!("No folders to backup configured."),
     }
 
     Ok(())

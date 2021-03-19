@@ -2,7 +2,7 @@ use s3::bucket::Bucket;
 use s3::creds::Credentials;
 
 use crate::config::AWS;
-use crate::uploader::{Uploader, UploaderError};
+use crate::remotes::uploader::{Uploader, UploaderError};
 
 use std::io::prelude::*;
 use std::io::Write;
@@ -43,7 +43,10 @@ impl AWSBucket {
         .context(InvalidCredentials)?;
         let bucket = Bucket::new(bucket_name, config.region.parse().unwrap(), credentials)
             .context(InvalidBucket)?;
-        return Ok(AWSBucket { name: String::from(bucket_name), bucket });
+        return Ok(AWSBucket {
+            name: String::from(bucket_name),
+            bucket,
+        });
     }
 }
 

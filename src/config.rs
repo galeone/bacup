@@ -41,15 +41,19 @@ pub struct PostgreSQL {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct Folder {
-    pub path: String,
+pub struct Folders {
+    pub pattern: String,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct Config {
+    // remotes
     pub aws: Option<HashMap<String, AWS>>,
     pub gcloud: Option<HashMap<String, GCloud>>,
     pub ssh: Option<HashMap<String, SSH>>,
+    // services
+    pub folders: Option<HashMap<String, Folders>>,
+    // mapping
 }
 
 #[derive(Debug, Snafu)]
@@ -67,7 +71,7 @@ pub enum ConfigError {
 }
 
 impl Config {
-    pub fn read(path: &Path) -> Result<Config, ConfigError> {
+    pub fn new(path: &Path) -> Result<Config, ConfigError> {
         let txt = fs::read_to_string(path).context(Open { filename: path })?;
         let config: Config = toml::from_str(&txt).context(Parse { filename: path })?;
         Ok(config)
