@@ -48,6 +48,8 @@ The goal of bacup is to make the configuration straightforward: a single file wh
     [postgres.service1]
     username = ""
     db_name = ""
+    host = ""
+    port = ""
 
 [folders]
     [folders.service1]
