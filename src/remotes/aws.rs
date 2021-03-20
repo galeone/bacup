@@ -8,8 +8,6 @@ use std::io::prelude::*;
 use std::io::Write;
 use std::path::PathBuf;
 
-use snafu::{ResultExt, Snafu};
-
 use async_trait::async_trait;
 
 use flate2::write::{GzEncoder, ZlibEncoder};
@@ -17,13 +15,35 @@ use flate2::Compression;
 
 use chrono::{DateTime, Utc};
 
-#[derive(Debug, Snafu)]
-pub enum AWSError {
-    #[snafu(display("Invalid credentials: {}", source))]
-    InvalidCredentials { source: s3::creds::AwsCredsError },
+use std::fmt;
 
-    #[snafu(display("Error creating bucket: {}", source))]
-    InvalidBucket { source: s3::S3Error },
+#[derive(Debug)]
+pub enum Error {
+    InvalidCredentials(s3::creds::AwsCredsError),
+    InvalidBucket(s3::S3Error),
+}
+
+impl From<s3::creds::AwsCredsError> for Error {
+    fn from(error: s3::creds::AwsCredsError) -> Self {
+        Error::InvalidCredentials(error)
+    }
+}
+
+impl From<s3::S3Error> for Error {
+    fn from(error: s3::S3Error) -> Self {
+        Error::InvalidBucket(error)
+    }
+}
+
+impl std::error::Error for Error {}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::InvalidCredentials(error) => write!(f, "Invalid credentials: {}", error),
+            Error::InvalidBucket(error) => write!(f, "Error creating bucket object: {}", error),
+        }
+    }
 }
 
 pub struct AWSBucket {
@@ -32,20 +52,18 @@ pub struct AWSBucket {
 }
 
 impl AWSBucket {
-    pub fn new(config: AWS, bucket_name: &str) -> Result<AWSBucket, AWSError> {
+    pub fn new(config: AWS, bucket_name: &str) -> Result<AWSBucket, Error> {
         let credentials = Credentials::new(
             Some(&config.access_key),
             Some(&config.secret_key),
             None,
             None,
             None,
-        )
-        .context(InvalidCredentials)?;
-        let bucket = Bucket::new(bucket_name, config.region.parse().unwrap(), credentials)
-            .context(InvalidBucket)?;
+        )?;
+        let bucket = Bucket::new(bucket_name, config.region.parse().unwrap(), credentials)?;
 
         // Performa a listing request to check if the configuration is ok
-        bucket.list_blocking(String::from("/"), Some(String::from("/"))).context(InvalidBucket)?;
+        bucket.list_blocking(String::from("/"), Some(String::from("/")))?;
         return Ok(AWSBucket {
             name: String::from(bucket_name),
             bucket,

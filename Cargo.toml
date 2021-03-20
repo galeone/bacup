@@ -17,9 +17,9 @@ glob = "0.3.0"
 log = "0.4.14"
 rust-s3 = "0.26.4"
 serde = { version = "1.0.124", features = ["derive"] }
-snafu = "0.6.10"
 stderrlog = "0.5.1"
 structopt = "0.3.21"
 tar = "0.4.33"
 toml = "0.5.8"
 url = { version = "2.2.1", features = ["serde"] }
+which = "4.0.2"
