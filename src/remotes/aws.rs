@@ -43,6 +43,9 @@ impl AWSBucket {
         .context(InvalidCredentials)?;
         let bucket = Bucket::new(bucket_name, config.region.parse().unwrap(), credentials)
             .context(InvalidBucket)?;
+
+        // Performa a listing request to check if the configuration is ok
+        bucket.list_blocking(String::from("/"), Some(String::from("/"))).context(InvalidBucket)?;
         return Ok(AWSBucket {
             name: String::from(bucket_name),
             bucket,
