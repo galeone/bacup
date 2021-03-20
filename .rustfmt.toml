@@ -1,0 +1,27 @@
+# All the commented directives will be removed once cargo fmt will use the
+# latest available version of rustfmt that implements these features (currently unstable)
+
+#blank_lines_lower_bound = 1
+#brace_style = "SameLineWhere"
+
+#condense_wildcard_suffixes = true
+#control_brace_style = "AlwaysSameLine"
+
+#empty_item_single_line = true
+#error_on_unformatted = true
+#error_on_line_overflow = true
+
+force_explicit_abi = true
+#format_code_in_doc_comments = true
+#format_generated_files = true
+#format_strings = true
+
+hard_tabs = false
+#match_arm_blocks = true
+
+#indent_style = "Block"
+#imports_granularity = "Module"
+
+# reorder_impl_items = true
+reorder_imports = true
+reorder_modules = true
