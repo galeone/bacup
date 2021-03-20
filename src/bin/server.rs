@@ -5,7 +5,7 @@ use std::path::Path;
 use bacup::config::Config;
 use bacup::remotes::aws;
 use bacup::services::folders;
-use log::{error, info, warn};
+use log::{error, warn};
 
 use structopt::StructOpt;
 
