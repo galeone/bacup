@@ -5,6 +5,8 @@ use std::process::{Command, Stdio};
 use std::string::String;
 use std::vec::Vec;
 
+use crate::services::lister::Lister;
+
 use which::which;
 
 pub struct PostgreSQL {
@@ -12,6 +14,7 @@ pub struct PostgreSQL {
     pub db_name: String,
     pub cmd: PathBuf,
     pub args: Vec<String>,
+    pub dumped_to: PathBuf,
 }
 
 #[derive(Debug)]
@@ -112,24 +115,37 @@ impl PostgreSQL {
             db_name: String::from(db_name),
             args: args.iter().map(|s| s.to_string()).collect(),
             cmd,
+            dumped_to: PathBuf::new(),
         })
     }
 
-    pub fn dump(self, dest: &PathBuf) -> Result<std::process::ExitStatus, Error> {
+    pub fn dump(&mut self, dest: &PathBuf) -> Result<std::process::ExitStatus, Error> {
         let parent = dest.parent().unwrap();
-        if ! parent.exists() {
+        if !parent.exists() {
             return Err(Error::RuntimeError(io::Error::new(
                 io::ErrorKind::Other,
                 format!("Folder {} does not exist.", parent.display()),
             )));
         }
-        let mut args = self.args;
+        let mut args = self.args.clone();
         args.push("-f".to_string());
         args.push(dest.to_str().unwrap().to_string());
-        match Command::new(self.cmd).args(&args).status() {
-            Ok(status) => return Ok(status),
+        match Command::new(self.cmd.clone()).args(&args).status() {
+            Ok(status) => {
+                self.dumped_to = dest.clone();
+                return Ok(status);
+            }
             Err(error) => return Err(Error::RuntimeError(error)),
         }
+    }
+}
+
+impl Lister for PostgreSQL {
+    fn list(&self) -> Vec<PathBuf> {
+        if self.dumped_to != PathBuf::new() {
+            return vec![self.dumped_to.clone()];
+        }
+        return vec![];
     }
 }
 
@@ -182,7 +198,7 @@ mod tests {
 
     #[test]
     fn test_dump_success() {
-        let db = PostgreSQL::new(USERNAME, DB_NAME, HOST, PORT).unwrap();
+        let mut db = PostgreSQL::new(USERNAME, DB_NAME, HOST, PORT).unwrap();
         let dest = Dump {
             path: PathBuf::from(format!(
                 "{}",

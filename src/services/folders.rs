@@ -2,6 +2,8 @@ use glob::glob;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use crate::services::lister::Lister;
+
 pub struct Folder {
     pub paths: Vec<PathBuf>,
 }
@@ -53,6 +55,12 @@ impl Folder {
         return Ok(Folder {
             paths: vec![PathBuf::from(path)],
         });
+    }
+}
+
+impl Lister for Folder {
+    fn list(&self) -> Vec<PathBuf> {
+        return self.paths.clone();
     }
 }
 

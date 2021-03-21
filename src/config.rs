@@ -39,8 +39,8 @@ pub struct GCloud {
 pub struct PostgreSQL {
     pub username: String,
     pub db_name: String,
-    pub host: String,
-    pub port: u16,
+    pub host: Option<String>,
+    pub port: Option<u16>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -56,6 +56,7 @@ pub struct Config {
     pub ssh: Option<HashMap<String, SSH>>,
     // services
     pub folders: Option<HashMap<String, Folders>>,
+    pub postgres: Option<HashMap<String, PostgreSQL>>,
     // mapping
 }
 

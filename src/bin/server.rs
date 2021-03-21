@@ -1,10 +1,14 @@
 use std::collections::HashMap;
 use std::env;
 use std::path::Path;
+use std::string::String;
 
 use bacup::config::Config;
-use bacup::remotes::aws;
-use bacup::services::folders;
+use bacup::remotes::aws::AWSBucket;
+use bacup::remotes::uploader::Uploader;
+use bacup::services::folders::Folder;
+use bacup::services::lister::Lister;
+use bacup::services::postgresql::PostgreSQL;
 use log::{error, warn};
 
 use structopt::StructOpt;
@@ -51,31 +55,50 @@ fn main() -> Result<(), i32> {
         }
     };
 
-    let mut remotes = HashMap::new();
+    let mut remotes: HashMap<String, Box<dyn Uploader>> = HashMap::new();
 
     match config.aws {
         Some(aws) => {
             for (bucket_name, bucket_config) in aws {
                 remotes.insert(
                     format!("aws.{}", bucket_name),
-                    aws::AWSBucket::new(bucket_config, &bucket_name).unwrap(),
+                    Box::new(AWSBucket::new(bucket_config, &bucket_name).unwrap()),
                 );
             }
         }
         None => warn!("No AWS cloud configured."),
     }
 
-    let mut services = HashMap::new();
+    let mut services: HashMap<String, Box<dyn Lister>> = HashMap::new();
     match config.folders {
         Some(folders) => {
             for (location_name, folder) in folders {
                 services.insert(
                     format!("folders.{}", location_name),
-                    folders::Folder::new(&folder.pattern).unwrap(),
+                    Box::new(Folder::new(&folder.pattern).unwrap()),
                 );
             }
         }
-        None => warn!("No folders to backup configured."),
+        None => warn!("No folders to backup."),
+    }
+    match config.postgres {
+        Some(postgres) => {
+            for (service_name, instance) in postgres {
+                services.insert(
+                    format!("postgres.{}", service_name),
+                    Box::new(
+                        PostgreSQL::new(
+                            &instance.username,
+                            &instance.db_name,
+                            &instance.host.unwrap_or(String::from("localhost")),
+                            instance.port.unwrap_or(5432),
+                        )
+                        .unwrap(),
+                    ),
+                );
+            }
+        }
+        None => warn!("No PostgreSQL to backup."),
     }
 
     Ok(())
