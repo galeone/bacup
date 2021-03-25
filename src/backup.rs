@@ -33,6 +33,7 @@ impl fmt::Display for Error {
 }
 
 pub struct Backup {
+    pub name: String,
     pub what: Box<dyn Lister>,
     pub r#where: Box<dyn Uploader>,
     pub remote_path: PathBuf,
@@ -221,6 +222,7 @@ impl Backup {
         ))))
     }
     pub fn new(
+        name: &str,
         remote: Box<dyn Uploader>,
         service: Box<dyn Lister>,
         config: BackupConfig,
@@ -241,6 +243,7 @@ impl Backup {
         };
 
         Ok(Backup {
+            name: String::from(name),
             what: service,
             r#where: remote,
             remote_path: PathBuf::from(config.remote_path),
@@ -251,10 +254,15 @@ impl Backup {
         })
     }
 
-    pub fn schedule(self, scheduler: &mut JobScheduler) -> Result<(), Error> {
+    pub fn schedule(
+        self,
+        scheduler: &mut JobScheduler,
+        schedule: cron::Schedule,
+    ) -> Result<(), Error> {
         let remote = self.r#where;
         let service = self.what;
         let compress = self.compress;
+        let name = self.name;
         let job = Job::new(self.schedule, move || {
             let local_files = service.list();
             for file in local_files {
@@ -264,13 +272,15 @@ impl Backup {
                             executor::block_on(remote.upload_folder_compressed(file.clone()));
                         if result.is_ok() {
                             info!(
-                                "Successfully uploaded and compressed folder {} to {}",
+                                "[{}] Successfully uploaded and compressed folder {} to {}",
+                                name,
                                 file.display(),
                                 remote.name()
                             );
                         } else {
                             error!(
-                                "Error during upload/compression of folder {}. Error: {}",
+                                "[{}] Error during upload/compression of folder {}. Error: {}",
+                                name,
                                 file.display(),
                                 result.err().unwrap()
                             );
@@ -279,7 +289,8 @@ impl Backup {
                         let result = executor::block_on(remote.upload_folder(file.clone()));
                         if result.is_ok() {
                             info!(
-                                "Successfully uploaded folder {} to {}",
+                                "[{}] Successfully uploaded folder {} to {}",
+                                name,
                                 file.display(),
                                 remote.name()
                             );
@@ -297,13 +308,15 @@ impl Backup {
                             executor::block_on(remote.upload_file_compressed(file.clone()));
                         if result.is_ok() {
                             info!(
-                                "Successfully uploaded and compressed file {} to {}",
+                                "[{}] Successfully uploaded and compressed file {} to {}",
+                                name,
                                 file.display(),
                                 remote.name()
                             );
                         } else {
                             error!(
-                                "Error during upload/compression of file {}. Error: {}",
+                                "[{}] Error during upload/compression of file {}. Error: {}",
+                                name,
                                 file.display(),
                                 result.err().unwrap()
                             );
@@ -312,13 +325,15 @@ impl Backup {
                         let result = executor::block_on(remote.upload_file(file.clone()));
                         if result.is_ok() {
                             info!(
-                                "Successfully uploaded file {} to {}",
+                                "[{}] Successfully uploaded file {} to {}",
+                                name,
                                 file.display(),
                                 remote.name()
                             );
                         } else {
                             error!(
-                                "Error during upload of file {}. Error: {}",
+                                "[{}] Error during upload of file {}. Error: {}",
+                                name,
                                 file.display(),
                                 result.err().unwrap()
                             );
@@ -326,6 +341,11 @@ impl Backup {
                     }
                 }
             }
+            info!(
+                "[{}] Next run: {}",
+                name,
+                schedule.upcoming(chrono::Utc).take(1).next().unwrap()
+            );
         });
         scheduler.add(job);
 
