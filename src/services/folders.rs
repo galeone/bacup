@@ -54,7 +54,10 @@ impl Folder {
             return Err(Error::DoesNotExist(PathBuf::from(path)));
         }
         return Ok(Folder {
-            paths: vec![PathBuf::from(path)],
+            paths: glob(path.join(PathBuf::from("**")).to_str().unwrap())
+                .unwrap()
+                .map(|pb_ge| pb_ge.unwrap())
+                .collect::<Vec<PathBuf>>(),
         });
     }
 }
