@@ -275,7 +275,6 @@ impl Backup {
                 Ok(dump) => dump,
             };
 
-
             let path = dump.path.clone().unwrap_or(PathBuf::new());
             if path.exists() {
                 // When dump goes out of scope, the dump is removed by Drop.
