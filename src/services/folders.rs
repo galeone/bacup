@@ -2,7 +2,7 @@ use glob::glob;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use crate::services::lister::Lister;
+use crate::services::service::{Dump, Service};
 
 #[derive(Clone)]
 pub struct Folder {
@@ -59,9 +59,13 @@ impl Folder {
     }
 }
 
-impl Lister for Folder {
+impl Service for Folder {
     fn list(&self) -> Vec<PathBuf> {
         return self.paths.clone();
+    }
+
+    fn dump(&mut self) -> Result<Dump, Box<dyn std::error::Error>> {
+        Ok(Dump { path: None })
     }
 }
 

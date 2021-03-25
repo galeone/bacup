@@ -6,12 +6,13 @@ use std::string::String;
 use std::vec::Vec;
 
 use crate::config::PostgreSQLConfig;
-use crate::services::lister::Lister;
+use crate::services::service::{Dump, Service};
 
 use which::which;
 
 #[derive(Clone)]
 pub struct PostgreSQL {
+    pub name: String,
     pub username: String,
     pub db_name: String,
     pub cmd: PathBuf,
@@ -36,7 +37,7 @@ impl fmt::Display for Error {
 }
 
 impl PostgreSQL {
-    pub fn new(config: PostgreSQLConfig) -> Result<PostgreSQL, Error> {
+    pub fn new(config: PostgreSQLConfig, name: &str) -> Result<PostgreSQL, Error> {
         let username = &config.username;
         let db_name = &config.db_name;
         let host = &config.host.unwrap_or(String::from("localhost"));
@@ -117,6 +118,7 @@ impl PostgreSQL {
         };
 
         Ok(PostgreSQL {
+            name: String::from(name),
             username: String::from(username),
             db_name: String::from(db_name),
             args: args.iter().map(|s| s.to_string()).collect(),
@@ -124,34 +126,40 @@ impl PostgreSQL {
             dumped_to: PathBuf::new(),
         })
     }
-
-    pub fn dump(&mut self, dest: &PathBuf) -> Result<std::process::ExitStatus, Error> {
-        let parent = dest.parent().unwrap();
-        if !parent.exists() {
-            return Err(Error::RuntimeError(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Folder {} does not exist.", parent.display()),
-            )));
-        }
-        let mut args = self.args.clone();
-        args.push("-f".to_string());
-        args.push(dest.to_str().unwrap().to_string());
-        match Command::new(self.cmd.clone()).args(&args).status() {
-            Ok(status) => {
-                self.dumped_to = dest.clone();
-                return Ok(status);
-            }
-            Err(error) => return Err(Error::RuntimeError(error)),
-        }
-    }
 }
 
-impl Lister for PostgreSQL {
+impl Service for PostgreSQL {
     fn list(&self) -> Vec<PathBuf> {
         if self.dumped_to != PathBuf::new() {
             return vec![self.dumped_to.clone()];
         }
         return vec![];
+    }
+
+    fn dump(&mut self) -> Result<Dump, Box<dyn std::error::Error>> {
+        let dest = std::env::current_dir()
+            .unwrap()
+            .join(PathBuf::from(format!("{}-dump.sql", self.name)));
+        let parent = dest.parent().unwrap();
+        if !parent.exists() {
+            return Err(Error::RuntimeError(io::Error::new(
+                io::ErrorKind::Other,
+                format!("Folder {} does not exist.", parent.display()),
+            ))
+            .into());
+        }
+        let mut args = self.args.clone();
+        args.push("-f".to_string());
+        args.push(dest.to_str().unwrap().to_string());
+        match Command::new(self.cmd.clone()).args(&args).status() {
+            Ok(_) => {
+                self.dumped_to = dest.clone();
+                return Ok(Dump { path: Some(dest) });
+            }
+            Err(error) => {
+                return Err(Error::RuntimeError(error).into());
+            }
+        }
     }
 }
 
@@ -163,6 +171,7 @@ mod tests {
     const DB_NAME: &str = "postgres";
     const HOST: &str = "localhost";
     const PORT: u16 = 5432;
+    const NAME: &str = "test_service_db";
 
     struct Dump {
         path: PathBuf,
@@ -185,7 +194,7 @@ mod tests {
             host: Some(String::from(HOST)),
             port: Some(PORT),
         };
-        assert!(PostgreSQL::new(config).is_ok());
+        assert!(PostgreSQL::new(config, NAME).is_ok());
     }
 
     #[test]
@@ -196,7 +205,7 @@ mod tests {
             host: Some(String::from(HOST)),
             port: Some(PORT),
         };
-        assert!(PostgreSQL::new(config).is_err());
+        assert!(PostgreSQL::new(config, NAME).is_err());
     }
 
     #[test]
@@ -207,7 +216,7 @@ mod tests {
             host: Some(String::from(HOST)),
             port: Some(PORT),
         };
-        assert!(PostgreSQL::new(config).is_err());
+        assert!(PostgreSQL::new(config, NAME).is_err());
     }
 
     #[test]
@@ -218,7 +227,7 @@ mod tests {
             host: Some(String::from("wat")),
             port: Some(PORT),
         };
-        assert!(PostgreSQL::new(config).is_err());
+        assert!(PostgreSQL::new(config, NAME).is_err());
     }
 
     #[test]
@@ -229,7 +238,7 @@ mod tests {
             host: Some(String::from(HOST)),
             port: Some(69),
         };
-        assert!(PostgreSQL::new(config).is_err());
+        assert!(PostgreSQL::new(config, NAME).is_err());
     }
 
     #[test]
@@ -241,14 +250,7 @@ mod tests {
             port: Some(PORT),
         };
 
-        let mut db = PostgreSQL::new(config).unwrap();
-        let dest = Dump {
-            path: PathBuf::from(format!(
-                "{}",
-                std::env::current_dir().unwrap().join("dump.sql").display()
-            )),
-        };
-
-        assert!(db.dump(&dest.path).is_ok());
+        let mut db = PostgreSQL::new(config, NAME).unwrap();
+        assert!(db.dump().is_ok());
     }
 }
