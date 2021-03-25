@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
-pub trait Lister {
+use dyn_clone::DynClone;
+
+pub trait Lister: DynClone {
     fn list(&self) -> Vec<PathBuf>;
 }

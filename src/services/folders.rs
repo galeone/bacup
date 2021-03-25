@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::services::lister::Lister;
 
+#[derive(Clone)]
 pub struct Folder {
     pub paths: Vec<PathBuf>,
 }
