@@ -1,8 +1,8 @@
 use s3::bucket::Bucket;
 use s3::creds::Credentials;
 
-use crate::config::AWS;
-use crate::remotes::uploader::{Uploader, UploaderError};
+use crate::config::AWSConfig;
+use crate::remotes::uploader;
 
 use std::io::prelude::*;
 use std::io::Write;
@@ -46,13 +46,14 @@ impl fmt::Display for Error {
     }
 }
 
+#[derive(Clone)]
 pub struct AWSBucket {
     name: String,
     bucket: Bucket,
 }
 
 impl AWSBucket {
-    pub fn new(config: AWS, bucket_name: &str) -> Result<AWSBucket, Error> {
+    pub fn new(config: AWSConfig, bucket_name: &str) -> Result<AWSBucket, Error> {
         let credentials = Credentials::new(
             Some(&config.access_key),
             Some(&config.secret_key),
@@ -72,12 +73,16 @@ impl AWSBucket {
 }
 
 #[async_trait]
-impl Uploader for AWSBucket {
-    async fn upload_file(&self, path: PathBuf) -> Result<(), UploaderError> {
+impl uploader::Uploader for AWSBucket {
+    fn name(&self) -> String {
+        return self.name.clone();
+    }
+
+    async fn upload_file(&self, path: PathBuf) -> Result<(), uploader::Error> {
         let mut content: Vec<u8> = vec![];
         let mut file = match std::fs::File::open(path.clone()) {
             Ok(file) => file,
-            Err(error) => return Err(UploaderError::LocalError(error)),
+            Err(error) => return Err(uploader::Error::LocalError(error)),
         };
 
         file.read_to_end(&mut content)?;
@@ -86,11 +91,11 @@ impl Uploader for AWSBucket {
         Ok(())
     }
 
-    async fn upload_file_compressed(&self, path: PathBuf) -> Result<(), UploaderError> {
+    async fn upload_file_compressed(&self, path: PathBuf) -> Result<(), uploader::Error> {
         let mut content: Vec<u8> = vec![];
         let mut file = match std::fs::File::open(path.clone()) {
             Ok(file) => file,
-            Err(error) => return Err(UploaderError::LocalError(error)),
+            Err(error) => return Err(uploader::Error::LocalError(error)),
         };
 
         file.read_to_end(&mut content)?;
@@ -99,7 +104,7 @@ impl Uploader for AWSBucket {
         e.write_all(&content)?;
         let compressed_bytes = match e.finish() {
             Ok(bytes) => bytes,
-            Err(_) => return Err(UploaderError::CompressionError),
+            Err(_) => return Err(uploader::Error::CompressionError),
         };
 
         let path = path.to_str().unwrap();
@@ -107,9 +112,9 @@ impl Uploader for AWSBucket {
         Ok(())
     }
 
-    async fn upload_folder(&self, path: PathBuf) -> Result<(), UploaderError> {
+    async fn upload_folder(&self, path: PathBuf) -> Result<(), uploader::Error> {
         if !path.is_dir() {
-            return Err(UploaderError::NotADirectory);
+            return Err(uploader::Error::NotADirectory);
         }
 
         let dirs = std::fs::read_dir(path)?
@@ -128,21 +133,24 @@ impl Uploader for AWSBucket {
         Ok(())
     }
 
-    async fn upload_folder_compressed(&self, path: PathBuf) -> Result<(), UploaderError> {
+    async fn upload_folder_compressed(&self, path: PathBuf) -> Result<(), uploader::Error> {
         if !path.is_dir() {
-            return Err(UploaderError::NotADirectory);
+            return Err(uploader::Error::NotADirectory);
         }
 
         let now: DateTime<Utc> = Utc::now();
-        let archive = std::fs::File::create(format!(
+        let archive_path = PathBuf::from(format!(
             "{}-{}.tar.zz",
             path.file_name().unwrap().to_str().unwrap(),
             now
-        ))?;
+        ));
+
+        let archive = std::fs::File::create(&archive_path)?;
         let e = GzEncoder::new(archive, Compression::default());
         let mut tar = tar::Builder::new(e);
         tar.append_dir_all(".", path.clone())?;
         self.upload_file(path).await?;
+        std::fs::remove_file(archive_path)?;
         Ok(())
     }
 }
