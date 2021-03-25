@@ -10,8 +10,8 @@ use bacup::remotes::uploader::Uploader;
 use bacup::services::folders::Folder;
 use bacup::services::lister::Lister;
 use bacup::services::postgresql::PostgreSQL;
-use log::{error, warn, info};
 
+use log::*;
 use structopt::StructOpt;
 
 use job_scheduler::JobScheduler;
@@ -31,11 +31,11 @@ struct Opt {
     verbose: usize,
 }
 
-fn main() -> Result<(), i32> {
+#[tokio::main]
+async fn main() -> Result<(), i32> {
     let opt = Opt::from_args();
-
     stderrlog::new()
-        .module(module_path!())
+        //.modules(vec![module_path!(), "bacup"])
         .quiet(opt.quiet)
         .verbosity(opt.verbose)
         .timestamp(stderrlog::Timestamp::Second)
@@ -69,7 +69,7 @@ fn main() -> Result<(), i32> {
             for (bucket_name, bucket_config) in aws {
                 remotes.insert(
                     format!("aws.{}", bucket_name),
-                    Box::new(AWSBucket::new(bucket_config, &bucket_name).unwrap()),
+                    Box::new(AWSBucket::new(bucket_config, &bucket_name).await.unwrap()),
                 );
             }
         }
@@ -122,8 +122,9 @@ fn main() -> Result<(), i32> {
             return Err(-1);
         }
         backup.insert(
-            backup_name,
+            backup_name.clone(),
             Backup::new(
+                &backup_name,
                 dyn_clone::clone_box(&*remotes[&config.r#where]),
                 dyn_clone::clone_box(&*services[&config.what]),
                 config,
@@ -136,7 +137,8 @@ fn main() -> Result<(), i32> {
 
     for (name, job) in backup {
         let upcoming = job.schedule.upcoming(chrono::Utc).take(1).next().unwrap();
-        let res = job.schedule(&mut scheduler);
+        let schedule = job.schedule.clone();
+        let res = job.schedule(&mut scheduler, schedule);
 
         match res {
             Err(error) => {

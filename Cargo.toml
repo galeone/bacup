@@ -24,6 +24,7 @@ serde = { version = "1.0.124", features = ["derive"] }
 stderrlog = "0.5.1"
 structopt = "0.3.21"
 tar = "0.4.33"
+tokio = { version = "0.2", features = ["full"] } # version 0.2 because other async lib use this old version :<
 toml = "0.5.8"
 url = { version = "2.2.1", features = ["serde"] }
 which = "4.0.2"
