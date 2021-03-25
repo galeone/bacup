@@ -8,8 +8,8 @@ use bacup::config::Config;
 use bacup::remotes::aws::AWSBucket;
 use bacup::remotes::uploader::Uploader;
 use bacup::services::folders::Folder;
-use bacup::services::lister::Lister;
 use bacup::services::postgresql::PostgreSQL;
+use bacup::services::service::Service;
 
 use log::*;
 use structopt::StructOpt;
@@ -76,7 +76,7 @@ async fn main() -> Result<(), i32> {
         None => warn!("No AWS cloud configured."),
     }
 
-    let mut services: HashMap<String, Box<dyn Lister>> = HashMap::new();
+    let mut services: HashMap<String, Box<dyn Service>> = HashMap::new();
     match config.folders {
         Some(folders) => {
             for (location_name, folder) in folders {
@@ -93,7 +93,7 @@ async fn main() -> Result<(), i32> {
             for (service_name, instance_config) in postgres {
                 services.insert(
                     format!("postgres.{}", service_name),
-                    Box::new(PostgreSQL::new(instance_config).unwrap()),
+                    Box::new(PostgreSQL::new(instance_config, &service_name).unwrap()),
                 );
             }
         }

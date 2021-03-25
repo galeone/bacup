@@ -1,6 +1,6 @@
 use crate::config::BackupConfig;
 use crate::remotes::uploader::Uploader;
-use crate::services::lister::Lister;
+use crate::services::service::Service;
 
 use job_scheduler::{Job, JobScheduler};
 use regex::Regex;
@@ -19,6 +19,7 @@ pub enum Error {
     InvalidCronConfiguration(cron::error::Error),
     RuntimeError(io::Error),
     InvalidWhenConfiguration(String),
+    GeneralError(Box<dyn std::error::Error>),
 }
 
 impl std::error::Error for Error {}
@@ -28,13 +29,14 @@ impl fmt::Display for Error {
             Error::InvalidCronConfiguration(error) => write!(f, "Invalid cron string: {}", error),
             Error::RuntimeError(error) => write!(f, "Runtime error: {}", error),
             Error::InvalidWhenConfiguration(msg) => write!(f, "Invalid when string: {}", msg),
+            Error::GeneralError(error) => write!(f, "{}", error),
         }
     }
 }
 
 pub struct Backup {
     pub name: String,
-    pub what: Box<dyn Lister>,
+    pub what: Box<dyn Service>,
     pub r#where: Box<dyn Uploader>,
     pub remote_path: PathBuf,
     pub when: String,
@@ -224,7 +226,7 @@ impl Backup {
     pub fn new(
         name: &str,
         remote: Box<dyn Uploader>,
-        service: Box<dyn Lister>,
+        service: Box<dyn Service>,
         config: BackupConfig,
     ) -> Result<Backup, Error> {
         let when_to_schedule = Backup::parse_when(&config.when);
@@ -260,10 +262,27 @@ impl Backup {
         schedule: cron::Schedule,
     ) -> Result<(), Error> {
         let remote = self.r#where;
-        let service = self.what;
+        let mut service = self.what;
         let compress = self.compress;
         let name = self.name;
         let job = Job::new(self.schedule, move || {
+            // First call dump, to trigger the dump service if present
+            let dump = match service.dump() {
+                Err(error) => {
+                    error!("{}", Error::GeneralError(error));
+                    return ();
+                }
+                Ok(dump) => dump,
+            };
+
+
+            let path = dump.path.clone().unwrap_or(PathBuf::new());
+            if path.exists() {
+                // When dump goes out of scope, the dump is removed by Drop.
+                info!("[{}] Dumped {}. Backing it up", name, path.display());
+            }
+
+            // Then loop over all the dumped files and backup them as specified
             let local_files = service.list();
             for file in local_files {
                 if file.is_dir() {
@@ -341,6 +360,7 @@ impl Backup {
                     }
                 }
             }
+
             info!(
                 "[{}] Next run: {}",
                 name,
