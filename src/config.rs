@@ -10,33 +10,33 @@ use std::fs;
 use toml;
 
 #[derive(Serialize, Deserialize)]
-pub struct Git {
+pub struct GitConfig {
     pub host: Url,
     pub port: u16,
     pub username: String,
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct SSH {
+pub struct SSHConfig {
     pub host: Url,
     pub port: u16,
     pub username: String,
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct AWS {
+pub struct AWSConfig {
     pub region: String,
     pub access_key: String,
     pub secret_key: String,
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct GCloud {
+pub struct GCloudConfig {
     pub service_account_path: String,
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct PostgreSQL {
+pub struct PostgreSQLConfig {
     pub username: String,
     pub db_name: String,
     pub host: Option<String>,
@@ -44,26 +44,36 @@ pub struct PostgreSQL {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct Folders {
+pub struct FoldersConfig {
     pub pattern: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct BackupConfig {
+    pub what: String,
+    pub r#where: String,
+    pub when: String,
+    pub remote_path: String,
+    pub compress: bool,
+    pub incremental: bool,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct Config {
     // remotes
-    pub aws: Option<HashMap<String, AWS>>,
-    pub gcloud: Option<HashMap<String, GCloud>>,
-    pub ssh: Option<HashMap<String, SSH>>,
+    pub aws: Option<HashMap<String, AWSConfig>>,
+    pub gcloud: Option<HashMap<String, GCloudConfig>>,
+    pub ssh: Option<HashMap<String, SSHConfig>>,
     // services
-    pub folders: Option<HashMap<String, Folders>>,
-    pub postgres: Option<HashMap<String, PostgreSQL>>,
+    pub folders: Option<HashMap<String, FoldersConfig>>,
+    pub postgres: Option<HashMap<String, PostgreSQLConfig>>,
     // mapping
+    pub backup: HashMap<String, BackupConfig>,
 }
 
 #[derive(Debug)]
 pub enum Error {
     Open(std::io::Error),
-
     Parse(toml::de::Error),
 }
 
