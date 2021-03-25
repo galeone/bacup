@@ -3,15 +3,22 @@ use std::env;
 use std::path::Path;
 use std::string::String;
 
+use bacup::backup::Backup;
 use bacup::config::Config;
 use bacup::remotes::aws::AWSBucket;
 use bacup::remotes::uploader::Uploader;
 use bacup::services::folders::Folder;
 use bacup::services::lister::Lister;
 use bacup::services::postgresql::PostgreSQL;
-use log::{error, warn};
+use log::{error, warn, info};
 
 use structopt::StructOpt;
+
+use job_scheduler::JobScheduler;
+
+use std::time::Duration;
+
+use dyn_clone;
 
 #[derive(StructOpt, Debug)]
 #[structopt()]
@@ -83,23 +90,65 @@ fn main() -> Result<(), i32> {
     }
     match config.postgres {
         Some(postgres) => {
-            for (service_name, instance) in postgres {
+            for (service_name, instance_config) in postgres {
                 services.insert(
                     format!("postgres.{}", service_name),
-                    Box::new(
-                        PostgreSQL::new(
-                            &instance.username,
-                            &instance.db_name,
-                            &instance.host.unwrap_or(String::from("localhost")),
-                            instance.port.unwrap_or(5432),
-                        )
-                        .unwrap(),
-                    ),
+                    Box::new(PostgreSQL::new(instance_config).unwrap()),
                 );
             }
         }
         None => warn!("No PostgreSQL to backup."),
     }
 
-    Ok(())
+    let mut backup: HashMap<String, Backup> = HashMap::new();
+    for (backup_name, config) in config.backup {
+        if !services.contains_key(&config.what) {
+            error!(
+                "Backup {}. Invalid what: {}, not available in the configured services: {:?}",
+                backup_name,
+                config.what,
+                services.keys()
+            );
+            return Err(-1);
+        }
+
+        if !remotes.contains_key(&config.r#where) {
+            error!(
+                "Backup {}. Invalid where: {}, not available in the configured remotes: {:?}",
+                backup_name,
+                config.r#where,
+                remotes.keys()
+            );
+            return Err(-1);
+        }
+        backup.insert(
+            backup_name,
+            Backup::new(
+                dyn_clone::clone_box(&*remotes[&config.r#where]),
+                dyn_clone::clone_box(&*services[&config.what]),
+                config,
+            )
+            .unwrap(),
+        );
+    }
+
+    let mut scheduler = JobScheduler::new();
+
+    for (name, job) in backup {
+        let upcoming = job.schedule.upcoming(chrono::Utc).take(1).next().unwrap();
+        let res = job.schedule(&mut scheduler);
+
+        match res {
+            Err(error) => {
+                error!("Error during scheduling: {}", error);
+                return Err(-1);
+            }
+            Ok(()) => info!("Successfully scheduled {}. Next run: {}", name, upcoming),
+        }
+    }
+
+    loop {
+        scheduler.tick();
+        std::thread::sleep(Duration::from_millis(500));
+    }
 }
