@@ -53,7 +53,7 @@ pub struct AWSBucket {
 }
 
 impl AWSBucket {
-    pub fn new(config: AWSConfig, bucket_name: &str) -> Result<AWSBucket, Error> {
+    pub async fn new(config: AWSConfig, bucket_name: &str) -> Result<AWSBucket, Error> {
         let credentials = Credentials::new(
             Some(&config.access_key),
             Some(&config.secret_key),
@@ -63,8 +63,10 @@ impl AWSBucket {
         )?;
         let bucket = Bucket::new(bucket_name, config.region.parse().unwrap(), credentials)?;
 
-        // Performa a listing request to check if the configuration is ok
-        bucket.list_blocking(String::from("/"), Some(String::from("/")))?;
+        // Perform a listing request to check if the configuration is ok
+        bucket
+            .list(String::from("/"), Some(String::from("/")))
+            .await?;
         return Ok(AWSBucket {
             name: String::from(bucket_name),
             bucket,
@@ -84,7 +86,6 @@ impl uploader::Uploader for AWSBucket {
             Ok(file) => file,
             Err(error) => return Err(uploader::Error::LocalError(error)),
         };
-
         file.read_to_end(&mut content)?;
         let path = path.to_str().unwrap();
         self.bucket.put_object(path, &content).await?;
@@ -149,7 +150,7 @@ impl uploader::Uploader for AWSBucket {
         let e = GzEncoder::new(archive, Compression::default());
         let mut tar = tar::Builder::new(e);
         tar.append_dir_all(".", path.clone())?;
-        self.upload_file(path).await?;
+        self.upload_file(archive_path.clone()).await?;
         std::fs::remove_file(archive_path)?;
         Ok(())
     }
