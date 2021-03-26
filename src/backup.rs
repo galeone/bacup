@@ -265,6 +265,7 @@ impl Backup {
         let mut service = self.what;
         let compress = self.compress;
         let name = self.name;
+        let remote_prefix = self.remote_path;
         let job = Job::new(self.schedule, move || {
             // First call dump, to trigger the dump service if present
             let dump = match service.dump() {
@@ -282,12 +283,70 @@ impl Backup {
             }
 
             // Then loop over all the dumped files and backup them as specified
-            let local_files = service.list();
+            let mut local_files = service.list();
+
+            // If the local_files list contains a single file, the upload should be in the form:
+            // /remote/prefix/filename
+            // even if the local file is in /local/path/in/folder/filename
+            //
+            // NOTE: It's impossible that local_files contains a single path, and this path is a folder.
+            // If this happens, the folder is empty and it makes no sense to backup it.
+            let mut single_location = local_files.len() <= 1;
+
+            // If the local_files list is a list of multiple files, we suppose these files all
+            // share the same root. To find the root we can simply find the shortest string.
+            // In this way, we can remove the "root prefix" and upload correctly.
+            // From:
+            // - /local/path/in/folder/A
+            // - /local/path/in/folder/B
+            // To
+            // - /remote/prefix/A
+            // - /remote/prefix/B
+
+            let local_files_clone = local_files.clone();
+            let mut local_prefix = local_files_clone
+                .iter()
+                .min_by(|a, b| a.cmp(b))
+                .unwrap()
+                .as_path();
+
+            // The local_prefix found is:
+            // In case of a folder: the shortest path inside the folder we want to backup.
+            // In case of a file: the file itself.
+
+            // If is a folder, we of course don't want to consider this a prefix, but its parent.
+            if !single_location {
+                local_prefix = local_prefix.parent().unwrap();
+            }
+
+            // If we are going to compress the local_files we need to take care of the content of
+            // the .list()-ed files.
+            // In case of compression of a folder, e.g. if the list_contains glob(/a/folder/**)
+            // we have to pass the the Remote.upload_folder_compressed only /a/folder for creating
+            // a single archive.
+            // Otherwise we'll create a different archive for every file/folder and this is wrong.
+
+            if compress
+                && !single_location
+                && local_files_clone
+                    .iter()
+                    .all(|path| path.starts_with(local_prefix))
+            {
+                single_location = true;
+                local_files = vec![PathBuf::from(local_prefix)];
+            }
+
             for file in local_files {
+                let remote_path = if single_location {
+                    remote_prefix.join(file.file_name().unwrap())
+                } else {
+                    remote_prefix.join(file.strip_prefix(local_prefix).unwrap())
+                };
                 if file.is_dir() {
                     if compress {
-                        let result =
-                            executor::block_on(remote.upload_folder_compressed(file.clone()));
+                        let result = executor::block_on(
+                            remote.upload_folder_compressed(file.clone(), remote_path),
+                        );
                         if result.is_ok() {
                             info!(
                                 "[{}] Successfully uploaded and compressed folder {} to {}",
@@ -304,7 +363,8 @@ impl Backup {
                             );
                         }
                     } else {
-                        let result = executor::block_on(remote.upload_folder(file.clone()));
+                        let result =
+                            executor::block_on(remote.upload_folder(file.clone(), remote_path));
                         if result.is_ok() {
                             info!(
                                 "[{}] Successfully uploaded folder {} to {}",
@@ -322,8 +382,9 @@ impl Backup {
                     }
                 } else {
                     if compress {
-                        let result =
-                            executor::block_on(remote.upload_file_compressed(file.clone()));
+                        let result = executor::block_on(
+                            remote.upload_file_compressed(file.clone(), remote_path),
+                        );
                         if result.is_ok() {
                             info!(
                                 "[{}] Successfully uploaded and compressed file {} to {}",
@@ -340,7 +401,8 @@ impl Backup {
                             );
                         }
                     } else {
-                        let result = executor::block_on(remote.upload_file(file.clone()));
+                        let result =
+                            executor::block_on(remote.upload_file(file.clone(), remote_path));
                         if result.is_ok() {
                             info!(
                                 "[{}] Successfully uploaded file {} to {}",

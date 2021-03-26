@@ -40,9 +40,17 @@ impl fmt::Display for Error {
 
 #[async_trait]
 pub trait Uploader: DynClone {
-    async fn upload_file(&self, path: PathBuf) -> Result<(), Error>;
-    async fn upload_file_compressed(&self, path: PathBuf) -> Result<(), Error>;
-    async fn upload_folder(&self, path: PathBuf) -> Result<(), Error>;
-    async fn upload_folder_compressed(&self, path: PathBuf) -> Result<(), Error>;
+    async fn upload_file(&self, path: PathBuf, remote_path: PathBuf) -> Result<(), Error>;
+    async fn upload_folder(&self, path: PathBuf, remote_path: PathBuf) -> Result<(), Error>;
+    async fn upload_file_compressed(
+        &self,
+        path: PathBuf,
+        remote_path: PathBuf,
+    ) -> Result<(), Error>;
+    async fn upload_folder_compressed(
+        &self,
+        path: PathBuf,
+        remote_path: PathBuf,
+    ) -> Result<(), Error>;
     fn name(&self) -> String;
 }

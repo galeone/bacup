@@ -80,19 +80,27 @@ impl uploader::Uploader for AWSBucket {
         return self.name.clone();
     }
 
-    async fn upload_file(&self, path: PathBuf) -> Result<(), uploader::Error> {
+    async fn upload_file(
+        &self,
+        path: PathBuf,
+        remote_path: PathBuf,
+    ) -> Result<(), uploader::Error> {
         let mut content: Vec<u8> = vec![];
         let mut file = match std::fs::File::open(path.clone()) {
             Ok(file) => file,
             Err(error) => return Err(uploader::Error::LocalError(error)),
         };
         file.read_to_end(&mut content)?;
-        let path = path.to_str().unwrap();
-        self.bucket.put_object(path, &content).await?;
+        let remote_path = remote_path.to_str().unwrap();
+        self.bucket.put_object(remote_path, &content).await?;
         Ok(())
     }
 
-    async fn upload_file_compressed(&self, path: PathBuf) -> Result<(), uploader::Error> {
+    async fn upload_file_compressed(
+        &self,
+        path: PathBuf,
+        remote_path: PathBuf,
+    ) -> Result<(), uploader::Error> {
         let mut content: Vec<u8> = vec![];
         let mut file = match std::fs::File::open(path.clone()) {
             Ok(file) => file,
@@ -108,25 +116,36 @@ impl uploader::Uploader for AWSBucket {
             Err(_) => return Err(uploader::Error::CompressionError),
         };
 
-        let path = path.to_str().unwrap();
-        self.bucket.put_object(path, &compressed_bytes).await?;
+        let now: DateTime<Utc> = Utc::now();
+        let remote_path = format!("{}-{}.tar.zz", remote_path.to_str().unwrap(), now);
+        self.bucket
+            .put_object(remote_path, &compressed_bytes)
+            .await?;
         Ok(())
     }
 
-    async fn upload_folder(&self, path: PathBuf) -> Result<(), uploader::Error> {
+    async fn upload_folder(
+        &self,
+        path: PathBuf,
+        remote_path: PathBuf,
+    ) -> Result<(), uploader::Error> {
         if !path.is_dir() {
             return Err(uploader::Error::NotADirectory);
         }
 
-        let dirs = std::fs::read_dir(path)?
+        let dirs = std::fs::read_dir(path.clone())?
             .map(|res| res.map(|e| e.path()))
             .collect::<Result<Vec<_>, std::io::Error>>();
 
         let mut futures = vec![];
 
+        let local_prefix = path.as_path();
         for dir in dirs {
             for file in dir {
-                futures.push(self.upload_file(file));
+                let file_path = file.as_path();
+                let remote_path_no_local_prefix =
+                    remote_path.join(file_path.strip_prefix(local_prefix).unwrap());
+                futures.push(self.upload_file(file, PathBuf::from(remote_path_no_local_prefix)));
             }
         }
 
@@ -134,7 +153,11 @@ impl uploader::Uploader for AWSBucket {
         Ok(())
     }
 
-    async fn upload_folder_compressed(&self, path: PathBuf) -> Result<(), uploader::Error> {
+    async fn upload_folder_compressed(
+        &self,
+        path: PathBuf,
+        remote_path: PathBuf,
+    ) -> Result<(), uploader::Error> {
         if !path.is_dir() {
             return Err(uploader::Error::NotADirectory);
         }
@@ -150,7 +173,11 @@ impl uploader::Uploader for AWSBucket {
         let e = GzEncoder::new(archive, Compression::default());
         let mut tar = tar::Builder::new(e);
         tar.append_dir_all(".", path.clone())?;
-        self.upload_file(archive_path.clone()).await?;
+        self.upload_file(
+            archive_path.clone(),
+            PathBuf::from(format!("{}-{}.tar.zz", remote_path.to_str().unwrap(), now)),
+        )
+        .await?;
         std::fs::remove_file(archive_path)?;
         Ok(())
     }
