@@ -3,6 +3,7 @@ use s3::creds::Credentials;
 
 use crate::config::AWSConfig;
 use crate::remotes::uploader;
+use crate::services::service::Dump;
 
 use std::io::prelude::*;
 use std::io::Write;
@@ -10,7 +11,7 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 
-use flate2::write::{GzEncoder, ZlibEncoder};
+use flate2::write::GzEncoder;
 use flate2::Compression;
 
 use chrono::{DateTime, Utc};
@@ -109,7 +110,7 @@ impl uploader::Uploader for AWSBucket {
 
         file.read_to_end(&mut content)?;
 
-        let mut e = ZlibEncoder::new(Vec::new(), Compression::default());
+        let mut e = GzEncoder::new(Vec::new(), Compression::default());
         e.write_all(&content)?;
         let compressed_bytes = match e.finish() {
             Ok(bytes) => bytes,
@@ -117,9 +118,14 @@ impl uploader::Uploader for AWSBucket {
         };
 
         let now: DateTime<Utc> = Utc::now();
-        let remote_path = format!("{}-{}.tar.zz", remote_path.to_str().unwrap(), now);
+        let parent = remote_path.parent().unwrap();
+        let remote_path_with_date = parent.join(format!(
+            "{}-{}.gz",
+            now.format("%Y-%m-%d-%H.%M"),
+            remote_path.file_name().unwrap().to_str().unwrap()
+        ));
         self.bucket
-            .put_object(remote_path, &compressed_bytes)
+            .put_object(remote_path_with_date.to_str().unwrap(), &compressed_bytes)
             .await?;
         Ok(())
     }
@@ -162,23 +168,31 @@ impl uploader::Uploader for AWSBucket {
             return Err(uploader::Error::NotADirectory);
         }
 
+        let archive_path = Dump {
+            path: Some(PathBuf::from(format!("tmp.tar.gz"))),
+        };
+
+        let archive = std::fs::File::create(&archive_path.path.clone().unwrap())?;
+        let mut encoder = GzEncoder::new(archive, Compression::default());
+        {
+            let mut tar = tar::Builder::new(&mut encoder);
+            tar.append_dir_all(".", path.clone())?;
+        }
+        let enc_res = encoder.finish();
+        if enc_res.is_err() {
+            return Err(uploader::Error::CompressionError);
+        }
+
         let now: DateTime<Utc> = Utc::now();
-        let archive_path = PathBuf::from(format!(
-            "{}-{}.tar.zz",
-            path.file_name().unwrap().to_str().unwrap(),
-            now
+        let parent = remote_path.parent().unwrap();
+        let remote_path_with_date = parent.join(format!(
+            "{}-{}.tar.gz",
+            now.format("%Y-%m-%d-%H.%M"),
+            remote_path.file_name().unwrap().to_str().unwrap()
         ));
 
-        let archive = std::fs::File::create(&archive_path)?;
-        let e = GzEncoder::new(archive, Compression::default());
-        let mut tar = tar::Builder::new(e);
-        tar.append_dir_all(".", path.clone())?;
-        self.upload_file(
-            archive_path.clone(),
-            PathBuf::from(format!("{}-{}.tar.zz", remote_path.to_str().unwrap(), now)),
-        )
-        .await?;
-        std::fs::remove_file(archive_path)?;
+        self.upload_file(archive_path.path.clone().unwrap(), remote_path_with_date)
+            .await?;
         Ok(())
     }
 }
