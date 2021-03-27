@@ -80,10 +80,8 @@ async fn main() -> Result<(), i32> {
     match config.folders {
         Some(folders) => {
             for (location_name, folder) in folders {
-                services.insert(
-                    format!("folders.{}", location_name),
-                    Box::new(Folder::new(&folder.pattern).unwrap()),
-                );
+                let key = format!("folders.{}", location_name);
+                services.insert(key, Box::new(Folder::new(&folder.pattern).unwrap()));
             }
         }
         None => warn!("No folders to backup."),
@@ -91,8 +89,9 @@ async fn main() -> Result<(), i32> {
     match config.postgres {
         Some(postgres) => {
             for (service_name, instance_config) in postgres {
+                let key = format!("postgres.{}", service_name);
                 services.insert(
-                    format!("postgres.{}", service_name),
+                    key,
                     Box::new(PostgreSQL::new(instance_config, &service_name).unwrap()),
                 );
             }
@@ -121,6 +120,7 @@ async fn main() -> Result<(), i32> {
             );
             return Err(-1);
         }
+
         backup.insert(
             backup_name.clone(),
             Backup::new(
