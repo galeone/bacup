@@ -41,7 +41,6 @@ pub struct Backup {
     pub remote_path: PathBuf,
     pub when: String,
     pub compress: bool,
-    pub incremental: bool,
     pub schedule: cron::Schedule,
 }
 
@@ -251,7 +250,6 @@ impl Backup {
             remote_path: PathBuf::from(config.remote_path),
             when: config.when,
             compress: config.compress,
-            incremental: config.incremental,
             schedule: schedule.unwrap(),
         })
     }

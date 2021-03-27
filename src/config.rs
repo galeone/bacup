@@ -55,7 +55,6 @@ pub struct BackupConfig {
     pub when: String,
     pub remote_path: String,
     pub compress: bool,
-    pub incremental: bool,
 }
 
 #[derive(Serialize, Deserialize)]
