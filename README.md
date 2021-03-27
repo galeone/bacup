@@ -21,7 +21,7 @@ The goal of bacup is to make the configuration straightforward: a single file wh
 # remotes definitions
 [aws]
     [aws.bucket_name]
-    region = ""# e.g "eu-west-3"
+    region = ""# "eu-west-3"
     access_key = ""
     secret_key = ""
 
@@ -31,15 +31,17 @@ The goal of bacup is to make the configuration straightforward: a single file wh
 
 [ssh]
     [ssh.remote_host1]
-    host = ""
-    port = ""
-    username = ""
+    host = "" # example.com
+    port = "" # 22
+    username = "" # myname
+    private_key = "" # ~/.ssh/id_rsa
 
 [git]
     [git.github]
     host = ""
     port = ""
     username = ""
+    private_key = "" # ~/.ssh/id_rsa
 
 # what to backup. Service definition
 [postgres]
@@ -61,7 +63,6 @@ The goal of bacup is to make the configuration straightforward: a single file wh
     when = "daily 01:00"
     remote_path = "/service1/database/"
     compress = false
-    incremental = true
 
     [backup.service1_source]
     what = "postgres.service1"
@@ -69,7 +70,6 @@ The goal of bacup is to make the configuration straightforward: a single file wh
     when = "daily 01:00"
     remote_path = "/service1/source/"
     compress = true
-    incremental = false
 ```
 
 ## Remote configuration
