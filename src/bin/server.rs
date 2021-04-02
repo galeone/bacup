@@ -5,8 +5,11 @@ use std::string::String;
 
 use bacup::backup::Backup;
 use bacup::config::Config;
+
 use bacup::remotes::aws::AWSBucket;
+use bacup::remotes::ssh::SSH;
 use bacup::remotes::uploader::Uploader;
+
 use bacup::services::folders::Folder;
 use bacup::services::postgresql::PostgreSQL;
 use bacup::services::service::Service;
@@ -74,6 +77,18 @@ async fn main() -> Result<(), i32> {
             }
         }
         None => warn!("No AWS cloud configured."),
+    }
+
+    match config.ssh {
+        Some(host) => {
+            for (hostname, config) in host {
+                remotes.insert(
+                    format!("ssh.{}", hostname),
+                    Box::new(SSH::new(config, &hostname).unwrap()),
+                );
+            }
+        }
+        None => warn!("No SSH remotes configured."),
     }
 
     let mut services: HashMap<String, Box<dyn Service>> = HashMap::new();
