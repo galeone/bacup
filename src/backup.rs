@@ -269,19 +269,24 @@ impl Backup {
                           name: &str,
                           file: &Path,
                           remote_name: &str,
-                          remote_path: &Path| {
+                          remote_path: &Path,
+                          compress: bool| {
             if result.is_ok() {
                 info!(
-                    "[{}] Successfully uploaded and compressed folder {} to [{}] {}",
+                    "[{}] Successfully uploaded {} {}: {} to [{}] {}",
                     name,
+                    if compress { " and compressed" } else { "" },
+                    if file.is_dir() { "folder" } else { "file" },
                     file.display(),
                     remote_name,
                     remote_path.display(),
                 );
             } else {
                 error!(
-                    "[{}] Error during upload/compression of folder {}. Error: {}",
+                    "[{}] Error during upload{} of {}: {}. Error: {}",
                     name,
+                    if compress { " or compression" } else { "" },
+                    if file.is_dir() { "folder" } else { "file" },
                     file.display(),
                     result.err().unwrap()
                 );
@@ -359,7 +364,14 @@ impl Backup {
             if !single_file && all_with_same_prefix && !compress {
                 let remote_path = &remote_prefix;
                 let result = executor::block_on(remote.upload_folder(&local_files, remote_path));
-                log_result(result, &name, local_prefix, &remote.name(), &remote_path);
+                log_result(
+                    result,
+                    &name,
+                    local_prefix,
+                    &remote.name(),
+                    &remote_path,
+                    compress,
+                );
                 // Set local_files to empty vector for skipping the next loop
                 // and avoid to add another else branch that will increase the
                 // indentation again.
@@ -373,23 +385,20 @@ impl Backup {
                     remote_prefix.join(file.strip_prefix(local_prefix).unwrap())
                 };
 
+                let result: Result<(), uploader::Error>;
                 if file.is_dir() {
-                    if compress {
-                        let result = executor::block_on(
-                            remote.upload_folder_compressed(&file, &remote_path),
-                        );
-                        log_result(result, &name, &file, &remote.name(), &remote_path);
-                    }
+                    // compress for sure, the uncompressed scenarios has been treated
+                    // outside this loop
+                    result =
+                        executor::block_on(remote.upload_folder_compressed(&file, &remote_path));
                 } else {
-                    if compress {
-                        let result =
-                            executor::block_on(remote.upload_file_compressed(&file, &remote_path));
-                        log_result(result, &name, &file, &remote.name(), &remote_path);
+                    result = if compress {
+                        executor::block_on(remote.upload_file_compressed(&file, &remote_path))
                     } else {
-                        let result = executor::block_on(remote.upload_file(&file, &remote_path));
-                        log_result(result, &name, &file, &remote.name(), &remote_path);
-                    }
+                        executor::block_on(remote.upload_file(&file, &remote_path))
+                    };
                 }
+                log_result(result, &name, &file, &remote.name(), &remote_path, compress);
             }
 
             info!(
