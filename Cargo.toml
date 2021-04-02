@@ -1,0 +1,32 @@
+[package]
+name = "bacup"
+version = "0.1.0"
+authors = ["Paolo Galeone <me@pgaleone.eu>"]
+edition = "2018"
+repository = "https://github.com/galeone/bacup"
+default-run = "server"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+async-trait = "0.1.48"
+chrono = "0.4.19"
+cron = "0.6.0" # 0.6 for begin compatibile with the crono used in job_scheduler
+dyn-clone = "1.0.4"
+flate2 = "1.0.20"
+futures = "0.3.13"
+glob = "0.3.0"
+job_scheduler = "1.2.1"
+log = "0.4.14"
+regex = "1.4.5"
+rust-s3 = "0.26.4"
+serde = { version = "1.0.124", features = ["derive"] }
+shellexpand = "2.1.0"
+stderrlog = "0.5.1"
+structopt = "0.3.21"
+tar = "0.4.33"
+tempfile = "3.2.0"
+tokio = { version = "0.2", features = ["full"] } # version 0.2 because other async lib use this old version :<
+toml = "0.5.8"
+url = { version = "2.2.1", features = ["serde"] }
+which = "4.0.2"
