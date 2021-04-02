@@ -3,18 +3,13 @@ use s3::creds::Credentials;
 
 use crate::config::AWSConfig;
 use crate::remotes::uploader;
-use crate::services::service::Dump;
 
 use std::io::prelude::*;
-use std::io::Write;
-use std::path::PathBuf;
+
+use std::fs::File;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
-
-use flate2::write::GzEncoder;
-use flate2::Compression;
-
-use chrono::{DateTime, Utc};
 
 use std::fmt;
 
@@ -81,16 +76,9 @@ impl uploader::Uploader for AWSBucket {
         return self.name.clone();
     }
 
-    async fn upload_file(
-        &self,
-        path: PathBuf,
-        remote_path: PathBuf,
-    ) -> Result<(), uploader::Error> {
+    async fn upload_file(&self, path: &Path, remote_path: &Path) -> Result<(), uploader::Error> {
         let mut content: Vec<u8> = vec![];
-        let mut file = match std::fs::File::open(path.clone()) {
-            Ok(file) => file,
-            Err(error) => return Err(uploader::Error::LocalError(error)),
-        };
+        let mut file = File::open(path.clone())?;
         file.read_to_end(&mut content)?;
         let remote_path = remote_path.to_str().unwrap();
         self.bucket.put_object(remote_path, &content).await?;
@@ -99,59 +87,47 @@ impl uploader::Uploader for AWSBucket {
 
     async fn upload_file_compressed(
         &self,
-        path: PathBuf,
-        remote_path: PathBuf,
+        path: &Path,
+        remote_path: &Path,
     ) -> Result<(), uploader::Error> {
-        let mut content: Vec<u8> = vec![];
-        let mut file = match std::fs::File::open(path.clone()) {
-            Ok(file) => file,
-            Err(error) => return Err(uploader::Error::LocalError(error)),
-        };
-
-        file.read_to_end(&mut content)?;
-
-        let mut e = GzEncoder::new(Vec::new(), Compression::default());
-        e.write_all(&content)?;
-        let compressed_bytes = match e.finish() {
-            Ok(bytes) => bytes,
-            Err(_) => return Err(uploader::Error::CompressionError),
-        };
-
-        let now: DateTime<Utc> = Utc::now();
-        let parent = remote_path.parent().unwrap();
-        let remote_path_with_date = parent.join(format!(
-            "{}-{}.gz",
-            now.format("%Y-%m-%d-%H.%M"),
-            remote_path.file_name().unwrap().to_str().unwrap()
-        ));
+        let compressed_bytes = self.compress_file(path)?;
+        let remote_path = self.remote_compressed_file_path(remote_path);
         self.bucket
-            .put_object(remote_path_with_date.to_str().unwrap(), &compressed_bytes)
+            .put_object(remote_path.to_str().unwrap(), &compressed_bytes)
             .await?;
         Ok(())
     }
 
     async fn upload_folder(
         &self,
-        path: PathBuf,
-        remote_path: PathBuf,
+        paths: &Vec<PathBuf>,
+        remote_path: &Path,
     ) -> Result<(), uploader::Error> {
-        if !path.is_dir() {
-            return Err(uploader::Error::NotADirectory);
+        let tot = paths.len();
+
+        let mut local_prefix = paths.iter().min_by(|a, b| a.cmp(b)).unwrap();
+        // The local_prefix found is the shortest path inside the folder we want to backup.
+
+        // If it is a folder, we of course don't want to consider this a prefix, but its parent.
+        let single_location = paths.len() <= 1;
+        let parent: PathBuf;
+        if !single_location {
+            parent = local_prefix.parent().unwrap().to_path_buf();
+            local_prefix = &parent;
         }
 
-        let dirs = std::fs::read_dir(path.clone())?
-            .map(|res| res.map(|e| e.path()))
-            .collect::<Result<Vec<_>, std::io::Error>>();
+        // Strip local prefix from remote pathsa
+        let mut remote_paths: Vec<PathBuf> = Vec::with_capacity(tot);
+        for i in 0..tot {
+            remote_paths.push(remote_path.join(paths[i].strip_prefix(local_prefix).unwrap()));
+        }
 
+        // Upload all the files one by one
         let mut futures = vec![];
-
-        let local_prefix = path.as_path();
-        for dir in dirs {
-            for file in dir {
-                let file_path = file.as_path();
-                let remote_path_no_local_prefix =
-                    remote_path.join(file_path.strip_prefix(local_prefix).unwrap());
-                futures.push(self.upload_file(file, PathBuf::from(remote_path_no_local_prefix)));
+        // Add only files - paths are automatically created remotely from the full file path
+        for i in 0..tot {
+            if paths[i].is_file() {
+                futures.push(self.upload_file(&paths[i], &remote_paths[i]));
             }
         }
 
@@ -161,37 +137,16 @@ impl uploader::Uploader for AWSBucket {
 
     async fn upload_folder_compressed(
         &self,
-        path: PathBuf,
-        remote_path: PathBuf,
+        path: &Path,
+        remote_path: &Path,
     ) -> Result<(), uploader::Error> {
         if !path.is_dir() {
             return Err(uploader::Error::NotADirectory);
         }
 
-        let archive_path = Dump {
-            path: Some(PathBuf::from(format!("tmp.tar.gz"))),
-        };
-
-        let archive = std::fs::File::create(&archive_path.path.clone().unwrap())?;
-        let mut encoder = GzEncoder::new(archive, Compression::default());
-        {
-            let mut tar = tar::Builder::new(&mut encoder);
-            tar.append_dir_all(".", path.clone())?;
-        }
-        let enc_res = encoder.finish();
-        if enc_res.is_err() {
-            return Err(uploader::Error::CompressionError);
-        }
-
-        let now: DateTime<Utc> = Utc::now();
-        let parent = remote_path.parent().unwrap();
-        let remote_path_with_date = parent.join(format!(
-            "{}-{}.tar.gz",
-            now.format("%Y-%m-%d-%H.%M"),
-            remote_path.file_name().unwrap().to_str().unwrap()
-        ));
-
-        self.upload_file(archive_path.path.clone().unwrap(), remote_path_with_date)
+        let remote_path = self.remote_archive_path(remote_path);
+        let compressed_folder = self.compress_folder(path)?;
+        self.upload_file(compressed_folder.path(), &remote_path)
             .await?;
         Ok(())
     }
