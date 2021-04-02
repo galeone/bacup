@@ -113,6 +113,18 @@ When `compression = true`, the file/folder are compressed using Gzip and the fil
 YYYY-MM-DD-hh:mm-filename.gz # or .tar.gz if filename is an archive
 ```
 
+## Running the server
+
+You need to build the `server` binary
+
+```bash
+cargo build # or cargo build --release
+```
+And then you have 2 options:
+
+1. Put the `config.toml` next to the executable.
+2. Use the `CONF_FILE` env variable, to configure the location of the configuration file.
+
 ## Remote configuration
 
 Configuring the remotes is straightforward. Every remote have a different way of getting the access code, here we try to share some useful reference.
