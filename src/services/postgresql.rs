@@ -148,10 +148,15 @@ impl Service for PostgreSQL {
             ))
             .into());
         }
-        let mut args = self.args.clone();
-        args.push("-f".to_string());
-        args.push(dest.to_str().unwrap().to_string());
-        match Command::new(self.cmd.clone()).args(&args).status() {
+
+        match Command::new(self.cmd.clone())
+            .args(
+                self.args
+                    .iter()
+                    .chain(&["-f".to_string(), dest.to_str().unwrap().to_string()]),
+            )
+            .status()
+        {
             Ok(_) => {
                 self.dumped_to = dest.clone();
                 return Ok(Dump { path: Some(dest) });
