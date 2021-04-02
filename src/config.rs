@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 use std::string::String;
-use url::Url;
 
 use std::fmt;
 use std::fs;
@@ -11,16 +10,19 @@ use toml;
 
 #[derive(Serialize, Deserialize)]
 pub struct GitConfig {
-    pub host: Url,
+    pub host: String,
     pub port: u16,
     pub username: String,
+    pub private_key: String,
+    pub branch: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct SSHConfig {
-    pub host: Url,
+    pub host: String,
     pub port: u16,
     pub username: String,
+    pub private_key: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -63,6 +65,7 @@ pub struct Config {
     pub aws: Option<HashMap<String, AWSConfig>>,
     pub gcloud: Option<HashMap<String, GCloudConfig>>,
     pub ssh: Option<HashMap<String, SSHConfig>>,
+    pub git: Option<HashMap<String, GitConfig>>,
     // services
     pub folders: Option<HashMap<String, FoldersConfig>>,
     pub postgres: Option<HashMap<String, PostgreSQLConfig>>,
