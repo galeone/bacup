@@ -6,7 +6,8 @@ use crate::services::service::{Dump, Service};
 
 #[derive(Clone)]
 pub struct Folder {
-    pub paths: Vec<PathBuf>,
+    paths: Vec<PathBuf>,
+    pattern: String,
 }
 
 #[derive(Debug, PartialEq)]
@@ -27,24 +28,24 @@ impl fmt::Display for Error {
 
 impl Folder {
     pub fn new(pattern: &str) -> Result<Folder, Error> {
-        if pattern.contains("*") {
-            let base_path = pattern.split("*").next().unwrap();
-            let base_path = Path::new(base_path);
+        for token in vec!["*", "?", "["] {
+            if pattern.contains(token) {
+                let base_path = pattern.split(token).next().unwrap();
+                let base_path = Path::new(base_path);
 
-            if !base_path.is_absolute() {
-                return Err(Error::IsNotAbsolute(PathBuf::from(base_path)));
+                if !base_path.is_absolute() {
+                    return Err(Error::IsNotAbsolute(PathBuf::from(base_path)));
+                }
+
+                if !base_path.exists() {
+                    return Err(Error::DoesNotExist(PathBuf::from(base_path)));
+                }
+
+                return Ok(Folder {
+                    pattern: String::from(pattern),
+                    paths: vec![],
+                });
             }
-
-            if !base_path.exists() {
-                return Err(Error::DoesNotExist(PathBuf::from(base_path)));
-            }
-
-            return Ok(Folder {
-                paths: glob(pattern)
-                    .unwrap()
-                    .map(|pb_ge| pb_ge.unwrap())
-                    .collect::<Vec<PathBuf>>(),
-            });
         }
         let path = Path::new(pattern);
         if !path.is_absolute() {
@@ -54,10 +55,8 @@ impl Folder {
             return Err(Error::DoesNotExist(PathBuf::from(path)));
         }
         return Ok(Folder {
-            paths: glob(path.join(PathBuf::from("**")).to_str().unwrap())
-                .unwrap()
-                .map(|pb_ge| pb_ge.unwrap())
-                .collect::<Vec<PathBuf>>(),
+            paths: vec![],
+            pattern: String::from(path.join("**").join("*").to_str().unwrap()),
         });
     }
 }
@@ -68,6 +67,11 @@ impl Service for Folder {
     }
 
     fn dump(&mut self) -> Result<Dump, Box<dyn std::error::Error>> {
+        self.paths = glob(&self.pattern)
+            .unwrap()
+            .map(|pb_ge| pb_ge.unwrap())
+            .collect::<Vec<PathBuf>>();
+
         Ok(Dump { path: None })
     }
 }
@@ -94,15 +98,40 @@ mod tests {
     }
 
     #[test]
-    fn test_wildcard() {
+    fn test_dump_and_list_no_wildcard() {
         let cwd = std::env::current_dir().unwrap();
-        let pattern = cwd.join("*");
-        let folder = Folder::new(pattern.to_str().unwrap());
+        let folder = Folder::new(cwd.to_str().unwrap());
         assert!(folder.is_ok());
-        let folder = folder.unwrap();
+        let mut folder = folder.unwrap();
 
-        let cargo = cwd.join("Cargo.toml");
-        assert!(folder.paths.contains(&cargo));
+        // Dump -> evaluate the pattern
+        assert!(folder.dump().is_ok());
+
+        let files = folder.list();
+        assert!(files.len() > 0);
+
+        let git_info = cwd.join(".git").join("info");
+        assert!(files.contains(&git_info));
+
+        let cargo = cwd.join("LICENSE");
+        assert!(files.contains(&cargo));
+    }
+
+    #[test]
+    fn test_dump_and_list_wildcard() {
+        let cwd = std::env::current_dir().unwrap();
+        let folder = Folder::new(cwd.join("src").join("*").to_str().unwrap());
+        assert!(folder.is_ok());
+        let mut folder = folder.unwrap();
+
+        // Dump -> evaluate the pattern
+        assert!(folder.dump().is_ok());
+
+        let files = folder.list();
+        assert!(files.len() > 0);
+
+        let lib_path = cwd.join("src").join("lib.rs");
+        assert!(files.contains(&lib_path));
     }
 
     #[test]
