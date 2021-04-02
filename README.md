@@ -119,5 +119,5 @@ Configuring the remotes is straightforward. Every remote have a different way of
 
 ### AWS
 
-- Access Key & Secret Key: [https://docs.aws.amazon.com/general/latest/gr/aws-sec-cred-types.html#access-keys-and-secret-access-keys](Understanding and getting your AWS credentials: programmatic access)
+- Access Key & Secret Key: [Understanding and getting your AWS credentials: programmatic access](https://docs.aws.amazon.com/general/latest/gr/aws-sec-cred-types.html#access-keys-and-secret-access-keys)
 - Region: the region is the region of your bucket.
