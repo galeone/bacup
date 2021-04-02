@@ -21,9 +21,11 @@ log = "0.4.14"
 regex = "1.4.5"
 rust-s3 = "0.26.4"
 serde = { version = "1.0.124", features = ["derive"] }
+shellexpand = "2.1.0"
 stderrlog = "0.5.1"
 structopt = "0.3.21"
 tar = "0.4.33"
+tempfile = "3.2.0"
 tokio = { version = "0.2", features = ["full"] } # version 0.2 because other async lib use this old version :<
 toml = "0.5.8"
 url = { version = "2.2.1", features = ["serde"] }
