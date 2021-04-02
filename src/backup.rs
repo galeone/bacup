@@ -1,12 +1,12 @@
 use crate::config::BackupConfig;
-use crate::remotes::uploader::Uploader;
+use crate::remotes::uploader;
 use crate::services::service::Service;
 
 use job_scheduler::{Job, JobScheduler};
 use regex::Regex;
 use std::fmt;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use chrono::Weekday;
@@ -37,7 +37,7 @@ impl fmt::Display for Error {
 pub struct Backup {
     pub name: String,
     pub what: Box<dyn Service>,
-    pub r#where: Box<dyn Uploader>,
+    pub r#where: Box<dyn uploader::Uploader>,
     pub remote_path: PathBuf,
     pub when: String,
     pub compress: bool,
@@ -224,7 +224,7 @@ impl Backup {
     }
     pub fn new(
         name: &str,
-        remote: Box<dyn Uploader>,
+        remote: Box<dyn uploader::Uploader>,
         service: Box<dyn Service>,
         config: BackupConfig,
     ) -> Result<Backup, Error> {
@@ -264,6 +264,30 @@ impl Backup {
         let compress = self.compress;
         let name = self.name;
         let remote_prefix = self.remote_path;
+
+        let log_result = |result: Result<(), uploader::Error>,
+                          name: &str,
+                          file: &Path,
+                          remote_name: &str,
+                          remote_path: &Path| {
+            if result.is_ok() {
+                info!(
+                    "[{}] Successfully uploaded and compressed folder {} to [{}] {}",
+                    name,
+                    file.display(),
+                    remote_name,
+                    remote_path.display(),
+                );
+            } else {
+                error!(
+                    "[{}] Error during upload/compression of folder {}. Error: {}",
+                    name,
+                    file.display(),
+                    result.err().unwrap()
+                );
+            }
+        };
+
         let job = Job::new(self.schedule, move || {
             // First call dump, to trigger the dump service if present
             let dump = match service.dump() {
@@ -286,10 +310,7 @@ impl Backup {
             // If the local_files list contains a single file, the upload should be in the form:
             // /remote/prefix/filename
             // even if the local file is in /local/path/in/folder/filename
-            //
-            // NOTE: It's impossible that local_files contains a single path, and this path is a folder.
-            // If this happens, the folder is empty and it makes no sense to backup it.
-            let mut single_location = local_files.len() <= 1;
+            let mut single_file = local_files.len() <= 1;
 
             // If the local_files list is a list of multiple files, we suppose these files all
             // share the same root. To find the root we can simply find the shortest string.
@@ -300,7 +321,6 @@ impl Backup {
             // To
             // - /remote/prefix/A
             // - /remote/prefix/B
-
             let local_files_clone = local_files.clone();
             let mut local_prefix = local_files_clone
                 .iter()
@@ -313,7 +333,7 @@ impl Backup {
             // In case of a file: the file itself.
 
             // If is a folder, we of course don't want to consider this a prefix, but its parent.
-            if !single_location {
+            if !single_file {
                 local_prefix = local_prefix.parent().unwrap();
             }
 
@@ -323,99 +343,51 @@ impl Backup {
             // we have to pass the the Remote.upload_folder_compressed only /a/folder for creating
             // a single archive.
             // Otherwise we'll create a different archive for every file/folder and this is wrong.
+            let all_with_same_prefix = local_files_clone
+                .iter()
+                .all(|path| path.starts_with(local_prefix));
+            if compress {
+                if !single_file && all_with_same_prefix {
+                    single_file = true;
+                    local_files = vec![PathBuf::from(local_prefix)];
+                }
+            }
 
-            if compress
-                && !single_location
-                && local_files_clone
-                    .iter()
-                    .all(|path| path.starts_with(local_prefix))
-            {
-                single_location = true;
-                local_files = vec![PathBuf::from(local_prefix)];
+            // Special case in which we want to upload a folder without compression
+            // If all the files share the same prefix, we upload all the files in this prefix.
+            // The remote should handle eventual incremental backup.
+            if !single_file && all_with_same_prefix && !compress {
+                let remote_path = &remote_prefix;
+                let result = executor::block_on(remote.upload_folder(&local_files, remote_path));
+                log_result(result, &name, local_prefix, &remote.name(), &remote_path);
+                // Set local_files to empty vector for skipping the next loop
+                // and avoid to add another else branch that will increase the
+                // indentation again.
+                local_files = vec![];
             }
 
             for file in local_files {
-                let remote_path = if single_location {
+                let remote_path = if single_file {
                     remote_prefix.join(file.file_name().unwrap())
                 } else {
                     remote_prefix.join(file.strip_prefix(local_prefix).unwrap())
                 };
+
                 if file.is_dir() {
                     if compress {
                         let result = executor::block_on(
-                            remote.upload_folder_compressed(file.clone(), remote_path),
+                            remote.upload_folder_compressed(&file, &remote_path),
                         );
-                        if result.is_ok() {
-                            info!(
-                                "[{}] Successfully uploaded and compressed folder {} to {}",
-                                name,
-                                file.display(),
-                                remote.name()
-                            );
-                        } else {
-                            error!(
-                                "[{}] Error during upload/compression of folder {}. Error: {}",
-                                name,
-                                file.display(),
-                                result.err().unwrap()
-                            );
-                        }
-                    } else {
-                        let result =
-                            executor::block_on(remote.upload_folder(file.clone(), remote_path));
-                        if result.is_ok() {
-                            info!(
-                                "[{}] Successfully uploaded folder {} to {}",
-                                name,
-                                file.display(),
-                                remote.name()
-                            );
-                        } else {
-                            error!(
-                                "Error during upload of folder {}. Error: {}",
-                                file.display(),
-                                result.err().unwrap()
-                            );
-                        }
+                        log_result(result, &name, &file, &remote.name(), &remote_path);
                     }
                 } else {
                     if compress {
-                        let result = executor::block_on(
-                            remote.upload_file_compressed(file.clone(), remote_path),
-                        );
-                        if result.is_ok() {
-                            info!(
-                                "[{}] Successfully uploaded and compressed file {} to {}",
-                                name,
-                                file.display(),
-                                remote.name()
-                            );
-                        } else {
-                            error!(
-                                "[{}] Error during upload/compression of file {}. Error: {}",
-                                name,
-                                file.display(),
-                                result.err().unwrap()
-                            );
-                        }
-                    } else {
                         let result =
-                            executor::block_on(remote.upload_file(file.clone(), remote_path));
-                        if result.is_ok() {
-                            info!(
-                                "[{}] Successfully uploaded file {} to {}",
-                                name,
-                                file.display(),
-                                remote.name()
-                            );
-                        } else {
-                            error!(
-                                "[{}] Error during upload of file {}. Error: {}",
-                                name,
-                                file.display(),
-                                result.err().unwrap()
-                            );
-                        }
+                            executor::block_on(remote.upload_file_compressed(&file, &remote_path));
+                        log_result(result, &name, &file, &remote.name(), &remote_path);
+                    } else {
+                        let result = executor::block_on(remote.upload_file(&file, &remote_path));
+                        log_result(result, &name, &file, &remote.name(), &remote_path);
                     }
                 }
             }
