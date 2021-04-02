@@ -223,7 +223,7 @@ impl uploader::Uploader for SSH {
 
         // If it is a folder, we of course don't want to consider this a prefix, but its parent.
         let single_location = paths.len() <= 1;
-        let parent : PathBuf;
+        let parent: PathBuf;
         if !single_location {
             parent = local_prefix.parent().unwrap().to_path_buf();
             local_prefix = &parent;
