@@ -6,8 +6,6 @@ use std::string::String;
 use std::fmt;
 use std::fs;
 
-use toml;
-
 #[derive(Serialize, Deserialize)]
 pub struct GitConfig {
     pub host: String,
@@ -18,7 +16,7 @@ pub struct GitConfig {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-pub struct SSHConfig {
+pub struct SshConfig {
     pub host: String,
     pub port: u16,
     pub username: String,
@@ -26,7 +24,7 @@ pub struct SSHConfig {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct AWSConfig {
+pub struct AwsConfig {
     pub region: String,
     pub access_key: String,
     pub secret_key: String,
@@ -38,7 +36,7 @@ pub struct GCloudConfig {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct PostgreSQLConfig {
+pub struct PostgreSqlConfig {
     pub username: String,
     pub db_name: String,
     pub host: Option<String>,
@@ -62,13 +60,13 @@ pub struct BackupConfig {
 #[derive(Serialize, Deserialize)]
 pub struct Config {
     // remotes
-    pub aws: Option<HashMap<String, AWSConfig>>,
+    pub aws: Option<HashMap<String, AwsConfig>>,
     pub gcloud: Option<HashMap<String, GCloudConfig>>,
-    pub ssh: Option<HashMap<String, SSHConfig>>,
+    pub ssh: Option<HashMap<String, SshConfig>>,
     pub git: Option<HashMap<String, GitConfig>>,
     // services
     pub folders: Option<HashMap<String, FoldersConfig>>,
-    pub postgres: Option<HashMap<String, PostgreSQLConfig>>,
+    pub postgres: Option<HashMap<String, PostgreSqlConfig>>,
     // mapping
     pub backup: HashMap<String, BackupConfig>,
 }

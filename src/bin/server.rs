@@ -6,12 +6,12 @@ use std::string::String;
 use bacup::backup::Backup;
 use bacup::config::Config;
 
-use bacup::remotes::aws::AWSBucket;
-use bacup::remotes::ssh::SSH;
+use bacup::remotes::aws::AwsBucket;
+use bacup::remotes::ssh::Ssh;
 use bacup::remotes::uploader::Uploader;
 
 use bacup::services::folders::Folder;
-use bacup::services::postgresql::PostgreSQL;
+use bacup::services::postgresql::PostgreSql;
 use bacup::services::service::Service;
 
 use log::*;
@@ -20,8 +20,6 @@ use structopt::StructOpt;
 use job_scheduler::JobScheduler;
 
 use std::time::Duration;
-
-use dyn_clone;
 
 #[derive(StructOpt, Debug)]
 #[structopt()]
@@ -72,7 +70,7 @@ async fn main() -> Result<(), i32> {
             for (bucket_name, bucket_config) in aws {
                 remotes.insert(
                     format!("aws.{}", bucket_name),
-                    Box::new(AWSBucket::new(bucket_config, &bucket_name).await.unwrap()),
+                    Box::new(AwsBucket::new(bucket_config, &bucket_name).await.unwrap()),
                 );
             }
         }
@@ -84,11 +82,11 @@ async fn main() -> Result<(), i32> {
             for (hostname, config) in host {
                 remotes.insert(
                     format!("ssh.{}", hostname),
-                    Box::new(SSH::new(config, &hostname).unwrap()),
+                    Box::new(Ssh::new(config, &hostname).unwrap()),
                 );
             }
         }
-        None => warn!("No SSH remotes configured."),
+        None => warn!("No Ssh remotes configured."),
     }
 
     let mut services: HashMap<String, Box<dyn Service>> = HashMap::new();
@@ -107,11 +105,11 @@ async fn main() -> Result<(), i32> {
                 let key = format!("postgres.{}", service_name);
                 services.insert(
                     key,
-                    Box::new(PostgreSQL::new(instance_config, &service_name).unwrap()),
+                    Box::new(PostgreSql::new(instance_config, &service_name).unwrap()),
                 );
             }
         }
-        None => warn!("No PostgreSQL to backup."),
+        None => warn!("No PostgreSql to backup."),
     }
 
     let mut backup: HashMap<String, Backup> = HashMap::new();

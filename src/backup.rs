@@ -49,16 +49,15 @@ impl Backup {
         let re = Regex::new(r"(\d{2}):(\d{2})").unwrap();
         let cap = re.captures(when);
 
-        if cap.is_none() {
-            return None;
-        }
+        cap.as_ref()?;
+
         let cap = cap.unwrap();
 
         let ret: (i8, i8) = (cap[1].parse().unwrap(), cap[2].parse().unwrap());
         if (0..24).contains(&ret.0) && (0..60).contains(&ret.1) {
             return Some(ret);
         }
-        return None;
+        None
     }
 
     fn parse_daily(input: &str) -> Result<String, Error> {
@@ -76,12 +75,12 @@ impl Backup {
             let hm = hm.unwrap();
             let input = input.replace(&format!("{:02}:{:02}", hm.0, hm.1), "");
             let input = input.trim();
-            if input != "" {
-                return Err(Error::InvalidWhenConfiguration(String::from(format!(
+            if !input.is_empty() {
+                return Err(Error::InvalidWhenConfiguration(format!(
                     "Expected to consume all the when string, unable to parse \
                     remeaining part: {}",
                     input
-                ))));
+                )));
             }
 
             // sec   min   hour   day of month   month   day of week   year
@@ -128,11 +127,11 @@ impl Backup {
                 let input = input.replace(&format!("{:02}:{:02}", hm.0, hm.1), "");
                 let input = input.trim();
                 if !vec!["", "weekly"].contains(&input) {
-                    return Err(Error::InvalidWhenConfiguration(String::from(format!(
+                    return Err(Error::InvalidWhenConfiguration(format!(
                         "Expected to consume all the when string, unable to parse \
                         remeaining part: {}",
                         input
-                    ))));
+                    )));
                 }
                 let day = Weekday::from_str(&day.0).unwrap().number_from_monday();
 
@@ -167,11 +166,11 @@ impl Backup {
             let day: i8 = match input.parse() {
                 Ok(day) => day,
                 Err(error) => {
-                    return Err(Error::InvalidWhenConfiguration(String::from(format!(
+                    return Err(Error::InvalidWhenConfiguration(format!(
                         "Unable to correctly parse the string for the day of the month. \
                         Given input: {}. Error: {}",
                         input, error
-                    ))))
+                    )))
                 }
             };
 
@@ -196,7 +195,7 @@ impl Backup {
     fn parse_when(when: &str) -> Result<String, Error> {
         // sec   min   hour   day of month   month   day of week   year
         // *     *     *      *              *       *             *
-        let input = when.clone().to_lowercase();
+        let input = when.to_lowercase();
         let daily = Backup::parse_daily(&input);
         if daily.is_ok() {
             return daily;
@@ -231,12 +230,12 @@ impl Backup {
         let when_to_schedule = Backup::parse_when(&config.when);
         let to_parse: &str;
         let parsable: String;
-        if when_to_schedule.is_err() {
-            to_parse = &config.when;
-        } else {
-            parsable = when_to_schedule.unwrap();
+        if let Ok(value) = when_to_schedule {
+            parsable = value;
             to_parse = &parsable;
-        }
+        } else {
+            to_parse = &config.when;
+        };
 
         let schedule = cron::Schedule::from_str(to_parse);
         if schedule.is_err() {
@@ -303,7 +302,7 @@ impl Backup {
                 Ok(dump) => dump,
             };
 
-            let path = dump.path.clone().unwrap_or(PathBuf::new());
+            let path = dump.path.clone().unwrap_or_default();
             if path.exists() {
                 // When dump goes out of scope, the dump is removed by Drop.
                 info!("[{}] Dumped {}. Backing it up", name, path.display());
@@ -351,11 +350,9 @@ impl Backup {
             let all_with_same_prefix = local_files_clone
                 .iter()
                 .all(|path| path.starts_with(local_prefix));
-            if compress {
-                if !single_file && all_with_same_prefix {
-                    single_file = true;
-                    local_files = vec![PathBuf::from(local_prefix)];
-                }
+            if compress && !single_file && all_with_same_prefix {
+                single_file = true;
+                local_files = vec![PathBuf::from(local_prefix)];
             }
 
             // Special case in which we want to upload a folder without compression

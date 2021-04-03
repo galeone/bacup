@@ -8,17 +8,14 @@ pub struct Dump {
 
 impl Drop for Dump {
     fn drop(&mut self) {
-        match self.path.clone() {
-            Some(path) => {
-                // If we created a dump file, we should take care of removing it
-                if path.exists() {
-                    #[allow(unused_must_use)]
-                    {
-                        std::fs::remove_file(&path);
-                    }
+        if let Some(path) = &self.path {
+            // If we created a dump file, we should take care of removing it
+            if path.exists() {
+                #[allow(unused_must_use)]
+                {
+                    std::fs::remove_file(&path);
                 }
             }
-            None => {}
         }
     }
 }

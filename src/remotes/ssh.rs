@@ -1,4 +1,4 @@
-use crate::config::SSHConfig;
+use crate::config::SshConfig;
 use crate::remotes::uploader;
 
 use std::fs;
@@ -51,16 +51,16 @@ impl fmt::Display for Error {
 }
 
 #[derive(Clone)]
-pub struct SSH {
+pub struct Ssh {
     remote_name: String,
-    config: SSHConfig,
+    config: SshConfig,
     ssh_cmd: PathBuf,
     rsync_cmd: PathBuf,
     ssh_args: Vec<String>,
 }
 
-impl SSH {
-    pub fn new(config: SSHConfig, remote_name: &str) -> Result<SSH, Error> {
+impl Ssh {
+    pub fn new(config: SshConfig, remote_name: &str) -> Result<Ssh, Error> {
         let ssh_cmd = which("ssh")?;
 
         let private_key = shellexpand::tilde(&config.private_key).to_string();
@@ -112,7 +112,7 @@ impl SSH {
 
         args.pop(); // remove "true" command
         let ssh_args = args.iter().map(|s| s.to_string()).collect();
-        Ok(SSH {
+        Ok(Ssh {
             remote_name: String::from(remote_name),
             config,
             ssh_cmd,
@@ -123,7 +123,7 @@ impl SSH {
 }
 
 #[async_trait]
-impl uploader::Uploader for SSH {
+impl uploader::Uploader for Ssh {
     fn name(&self) -> String {
         self.remote_name.clone()
     }
@@ -210,7 +210,7 @@ impl uploader::Uploader for SSH {
 
     async fn upload_folder(
         &self,
-        paths: &Vec<PathBuf>,
+        paths: &[PathBuf],
         remote_path: &Path,
     ) -> Result<(), uploader::Error> {
         let mut local_prefix = paths.iter().min_by(|a, b| a.cmp(b)).unwrap();

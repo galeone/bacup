@@ -1,7 +1,7 @@
 use s3::bucket::Bucket;
 use s3::creds::Credentials;
 
-use crate::config::AWSConfig;
+use crate::config::AwsConfig;
 use crate::remotes::uploader;
 
 use std::io::prelude::*;
@@ -43,13 +43,13 @@ impl fmt::Display for Error {
 }
 
 #[derive(Clone)]
-pub struct AWSBucket {
+pub struct AwsBucket {
     name: String,
     bucket: Bucket,
 }
 
-impl AWSBucket {
-    pub async fn new(config: AWSConfig, bucket_name: &str) -> Result<AWSBucket, Error> {
+impl AwsBucket {
+    pub async fn new(config: AwsConfig, bucket_name: &str) -> Result<AwsBucket, Error> {
         let credentials = Credentials::new(
             Some(&config.access_key),
             Some(&config.secret_key),
@@ -63,7 +63,7 @@ impl AWSBucket {
         bucket
             .list(String::from("/"), Some(String::from("/")))
             .await?;
-        return Ok(AWSBucket {
+        return Ok(AwsBucket {
             name: String::from(bucket_name),
             bucket,
         });
@@ -71,14 +71,14 @@ impl AWSBucket {
 }
 
 #[async_trait]
-impl uploader::Uploader for AWSBucket {
+impl uploader::Uploader for AwsBucket {
     fn name(&self) -> String {
         self.name.clone()
     }
 
     async fn upload_file(&self, path: &Path, remote_path: &Path) -> Result<(), uploader::Error> {
         let mut content: Vec<u8> = vec![];
-        let mut file = File::open(path.clone())?;
+        let mut file = File::open(path)?;
         file.read_to_end(&mut content)?;
         let remote_path = remote_path.to_str().unwrap();
         self.bucket.put_object(remote_path, &content).await?;
@@ -100,7 +100,7 @@ impl uploader::Uploader for AWSBucket {
 
     async fn upload_folder(
         &self,
-        paths: &Vec<PathBuf>,
+        paths: &[PathBuf],
         remote_path: &Path,
     ) -> Result<(), uploader::Error> {
         let tot = paths.len();
@@ -118,8 +118,8 @@ impl uploader::Uploader for AWSBucket {
 
         // Strip local prefix from remote pathsa
         let mut remote_paths: Vec<PathBuf> = Vec::with_capacity(tot);
-        for i in 0..tot {
-            remote_paths.push(remote_path.join(paths[i].strip_prefix(local_prefix).unwrap()));
+        for path in paths.iter() {
+            remote_paths.push(remote_path.join(path.strip_prefix(local_prefix).unwrap()));
         }
 
         // Upload all the files one by one

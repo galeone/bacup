@@ -50,7 +50,7 @@ impl fmt::Display for Error {
 #[async_trait]
 pub trait Uploader: DynClone {
     async fn upload_file(&self, path: &Path, remote_path: &Path) -> Result<(), Error>;
-    async fn upload_folder(&self, paths: &Vec<PathBuf>, remote_path: &Path) -> Result<(), Error>;
+    async fn upload_folder(&self, paths: &[PathBuf], remote_path: &Path) -> Result<(), Error>;
     async fn upload_file_compressed(&self, path: &Path, remote_path: &Path) -> Result<(), Error>;
     async fn upload_folder_compressed(&self, path: &Path, remote_path: &Path) -> Result<(), Error>;
     fn name(&self) -> String;
@@ -62,7 +62,7 @@ pub trait Uploader: DynClone {
         let mut encoder = GzEncoder::new(archive, Compression::default());
         {
             let mut tar = tar::Builder::new(&mut encoder);
-            tar.append_dir_all(".", path.clone())?;
+            tar.append_dir_all(".", path)?;
         }
         let enc_res = encoder.finish();
         if enc_res.is_err() {
@@ -73,7 +73,7 @@ pub trait Uploader: DynClone {
 
     fn compress_file(&self, path: &Path) -> Result<Vec<u8>, Error> {
         let mut content: Vec<u8> = vec![];
-        let mut file = match std::fs::File::open(path.clone()) {
+        let mut file = match std::fs::File::open(path) {
             Ok(file) => file,
             Err(error) => return Err(Error::LocalError(error)),
         };
