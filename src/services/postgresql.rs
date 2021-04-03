@@ -192,6 +192,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_new_connection_ok() {
         let config = PostgreSQLConfig {
             username: String::from(USERNAME),
@@ -247,6 +248,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_dump_success() {
         let config = PostgreSQLConfig {
             username: String::from(USERNAME),
