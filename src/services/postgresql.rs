@@ -40,7 +40,7 @@ impl PostgreSQL {
     pub fn new(config: PostgreSQLConfig, name: &str) -> Result<PostgreSQL, Error> {
         let username = &config.username;
         let db_name = &config.db_name;
-        let host = &config.host.unwrap_or(String::from("localhost"));
+        let host = &config.host.unwrap_or_else(|| String::from("localhost"));
         let port = config.port.unwrap_or(5432);
         let cmd = match which("pg_isready") {
             Err(error) => return Err(Error::CommandNotFound(error)),
@@ -88,7 +88,7 @@ impl PostgreSQL {
         };
 
         let stderr = std::str::from_utf8(&output.stderr).unwrap().trim();
-        if stderr.len() > 0 {
+        if !stderr.is_empty() {
             return Err(Error::RuntimeError(io::Error::new(
                 io::ErrorKind::Other,
                 stderr,
@@ -159,11 +159,9 @@ impl Service for PostgreSQL {
         {
             Ok(_) => {
                 self.dumped_to = dest.clone();
-                return Ok(Dump { path: Some(dest) });
+                Ok(Dump { path: Some(dest) })
             }
-            Err(error) => {
-                return Err(Error::RuntimeError(error).into());
-            }
+            Err(error) => Err(Error::RuntimeError(error).into()),
         }
     }
 }

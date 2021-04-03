@@ -18,7 +18,7 @@ impl Drop for Dump {
                     }
                 }
             }
-            None => return,
+            None => {}
         }
     }
 }

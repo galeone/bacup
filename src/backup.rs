@@ -212,7 +212,7 @@ impl Backup {
             return weekly;
         }
 
-        Err(Error::InvalidWhenConfiguration(String::from(format!(
+        Err(Error::InvalidWhenConfiguration(format!(
             "Unable to parse for:\n\
         Daily: {}\n
         Weekly: {}\n
@@ -220,7 +220,7 @@ impl Backup {
             daily.unwrap_err(),
             weekly.unwrap_err(),
             monthly.unwrap_err()
-        ))))
+        )))
     }
     pub fn new(
         name: &str,
@@ -298,7 +298,7 @@ impl Backup {
             let dump = match service.dump() {
                 Err(error) => {
                     error!("{}", Error::GeneralError(error));
-                    return ();
+                    return;
                 }
                 Ok(dump) => dump,
             };

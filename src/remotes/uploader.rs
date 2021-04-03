@@ -84,8 +84,8 @@ pub trait Uploader: DynClone {
         e.write_all(&content)?;
 
         match e.finish() {
-            Ok(bytes) => return Ok(bytes),
-            Err(_) => return Err(Error::CompressionError),
+            Ok(bytes) => Ok(bytes),
+            Err(_) => Err(Error::CompressionError),
         }
     }
 

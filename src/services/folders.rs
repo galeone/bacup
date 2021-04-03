@@ -28,7 +28,7 @@ impl fmt::Display for Error {
 
 impl Folder {
     pub fn new(pattern: &str) -> Result<Folder, Error> {
-        for token in vec!["*", "?", "["] {
+        for token in &["*", "?", "["] {
             if pattern.contains(token) {
                 let base_path = pattern.split(token).next().unwrap();
                 let base_path = Path::new(base_path);
@@ -63,7 +63,7 @@ impl Folder {
 
 impl Service for Folder {
     fn list(&self) -> Vec<PathBuf> {
-        return self.paths.clone();
+        self.paths.clone()
     }
 
     fn dump(&mut self) -> Result<Dump, Box<dyn std::error::Error>> {

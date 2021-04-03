@@ -19,8 +19,6 @@ use async_trait::async_trait;
 use std::process::{Command, Stdio};
 use which::which;
 
-use shellexpand;
-
 #[derive(Debug)]
 pub enum Error {
     InvalidPrivateKey(String),
@@ -127,7 +125,7 @@ impl SSH {
 #[async_trait]
 impl uploader::Uploader for SSH {
     fn name(&self) -> String {
-        return self.remote_name.clone();
+        self.remote_name.clone()
     }
 
     async fn upload_file(&self, path: &Path, remote_path: &Path) -> Result<(), uploader::Error> {
@@ -172,8 +170,6 @@ impl uploader::Uploader for SSH {
                 Stderr: {}\nStdout: {}",
                 errlog, outlog
             );
-            drop(stdout);
-            drop(stderr);
             return Err(uploader::Error::LocalError(io::Error::new(
                 io::ErrorKind::Other,
                 message,

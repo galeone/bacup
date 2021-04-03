@@ -73,7 +73,7 @@ impl AWSBucket {
 #[async_trait]
 impl uploader::Uploader for AWSBucket {
     fn name(&self) -> String {
-        return self.name.clone();
+        self.name.clone()
     }
 
     async fn upload_file(&self, path: &Path, remote_path: &Path) -> Result<(), uploader::Error> {
