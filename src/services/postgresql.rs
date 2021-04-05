@@ -170,8 +170,8 @@ impl Service for PostgreSql {
 mod tests {
 
     use super::*;
-    const USERNAME: &str = "postgres";
-    const DB_NAME: &str = "postgres";
+    const USERNAME: &str = "docker";
+    const DB_NAME: &str = "docker";
     const HOST: &str = "localhost";
     const PORT: u16 = 5432;
     const NAME: &str = "test_service_db";
