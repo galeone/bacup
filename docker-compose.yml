@@ -1,10 +1,10 @@
-version: '2.4'
+version: '3'
 services:
   postgres:
     container_name: postgres
-    restart: always
-    image: eg_postgresql
-    volumes:
-      - ./postgres-data:/var/lib/postgresql/data
+    image: 'postgres:latest'
+    environment:
+      - POSTGRES_HOST_AUTH_METHOD=trust
     ports:
       - 5432:5432
+    
