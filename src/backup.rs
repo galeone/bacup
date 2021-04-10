@@ -47,11 +47,7 @@ pub struct Backup {
 impl Backup {
     fn get_hours_and_minutes(when: &str) -> Option<(i8, i8)> {
         let re = Regex::new(r"(\d{2}):(\d{2})").unwrap();
-        let cap = re.captures(when);
-
-        cap.as_ref()?;
-
-        let cap = cap.unwrap();
+        let cap = re.captures(when)?;
 
         let ret: (i8, i8) = (cap[1].parse().unwrap(), cap[2].parse().unwrap());
         if (0..24).contains(&ret.0) && (0..60).contains(&ret.1) {
