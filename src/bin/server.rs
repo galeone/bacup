@@ -7,7 +7,9 @@ use bacup::backup::Backup;
 use bacup::config::Config;
 
 use bacup::remotes::aws::AwsBucket;
+use bacup::remotes::localhost::Localhost;
 use bacup::remotes::ssh::Ssh;
+
 use bacup::remotes::uploader::Uploader;
 
 use bacup::services::folders::Folder;
@@ -87,6 +89,18 @@ async fn main() -> Result<(), i32> {
             }
         }
         None => warn!("No Ssh remotes configured."),
+    }
+
+    match config.localhost {
+        Some(host) => {
+            for (name, config) in host {
+                remotes.insert(
+                    format!("localhost.{}", name),
+                    Box::new(Localhost::new(config, &name).unwrap()),
+                );
+            }
+        }
+        None => warn!("No localhost remotes configured."),
     }
 
     let mut services: HashMap<String, Box<dyn Service>> = HashMap::new();
