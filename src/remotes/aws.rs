@@ -116,7 +116,7 @@ impl uploader::Uploader for AwsBucket {
             local_prefix = &parent;
         }
 
-        // Strip local prefix from remote pathsa
+        // Strip local prefix from remote paths
         let mut remote_paths: Vec<PathBuf> = Vec::with_capacity(tot);
         for path in paths.iter() {
             remote_paths.push(remote_path.join(path.strip_prefix(local_prefix).unwrap()));
