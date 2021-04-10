@@ -78,7 +78,7 @@ When configuring the backups, the field **when** accepts configuration strings i
 [backup]
     # Compress the DB dump and upload it to aws
     # everyday at 01:00 UTC
-    [backup.service1_db]
+    [backup.service1_db_compress]
     what = "postgres.service1"
     where = "aws.bucket_name"
     when = "daily 01:00"
@@ -97,7 +97,7 @@ When configuring the backups, the field **when** accepts configuration strings i
     # Archive the files of service 1 and upload them to
     # the ssh.remote_host1 in the remote ~/backups/service1 folder.
     # Every friday at 5:00
-    [backup.service1_source]
+    [backup.service1_source_compress]
     what = "folders.service1"
     where = "ssh.remote_host1"
     when = "weekly friday 05:00"
@@ -117,7 +117,7 @@ When configuring the backups, the field **when** accepts configuration strings i
     # Compress the DB dump and copy it to the localhost "remote"
     # where, for example, samba is mounted
     # everyday at 01:00 UTC
-    [backup.service1_db]
+    [backup.service1_db_on_samba]
     what = "postgres.service1"
     where = "localhost.samba"
     when = "daily 01:00"
