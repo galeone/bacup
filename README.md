@@ -45,6 +45,14 @@ When configuring the backups, the field **when** accepts configuration strings i
     username = "" # myname
     private_key = "" # ~/.ssh/id_rsa
 
+[localhost]
+    # Like copy-paste in local. The underlying infrastructure manages
+    # the remote (if any) part. Below 2 examples
+    [localhost.samba]
+    path = "" # local path where samba is mounted
+
+    [localhost.disk2]
+    path = "" # local path where the second disk of the machine is mounted
 # Not available yet!
 #[git]
 #    [git.github]
@@ -75,7 +83,7 @@ When configuring the backups, the field **when** accepts configuration strings i
     where = "aws.bucket_name"
     when = "daily 01:00"
     remote_path = "/service1/database/"
-    compress = false
+    compress = true
 
     # Dump the DB and upload it to aws (no compression)
     # every first day of the month
@@ -105,6 +113,16 @@ When configuring the backups, the field **when** accepts configuration strings i
     when = "5 0 * 8 *"
     remote_path = "~/backups/service1_incremental/"
     compress = false # no compression = incremental sync
+
+    # Compress the DB dump and copy it to the localhost "remote"
+    # where, for example, samba is mounted
+    # everyday at 01:00 UTC
+    [backup.service1_db]
+    what = "postgres.service1"
+    where = "localhost.samba"
+    when = "daily 01:00"
+    remote_path = "/path/inside/the/samba/location"
+    compress = false
 ```
 
 When `compression = true`, the file/folder are compressed using Gzip and the file is archived (in the desired remote location) with the format:
