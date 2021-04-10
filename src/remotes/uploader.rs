@@ -91,7 +91,11 @@ pub trait Uploader: DynClone {
 
     fn remote_archive_path(&self, remote_path: &Path) -> PathBuf {
         let now: DateTime<Utc> = Utc::now();
-        let parent = remote_path.parent().unwrap();
+        let parent = match remote_path.parent() {
+            Some(path) => path.to_path_buf(),
+            None => PathBuf::from("/"),
+        };
+
         parent.join(format!(
             "{}-{}.tar.gz",
             now.format("%Y-%m-%d-%H.%M"),
@@ -101,7 +105,11 @@ pub trait Uploader: DynClone {
 
     fn remote_compressed_file_path(&self, remote_path: &Path) -> PathBuf {
         let now: DateTime<Utc> = Utc::now();
-        let parent = remote_path.parent().unwrap();
+        let parent = match remote_path.parent() {
+            Some(path) => path.to_path_buf(),
+            None => PathBuf::from("/"),
+        };
+
         parent.join(format!(
             "{}-{}.gz",
             now.format("%Y-%m-%d-%H.%M"),
