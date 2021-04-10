@@ -58,12 +58,18 @@ pub struct BackupConfig {
 }
 
 #[derive(Serialize, Deserialize)]
+pub struct LocalhostConfig {
+    pub path: String,
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct Config {
     // remotes
     pub aws: Option<HashMap<String, AwsConfig>>,
     pub gcloud: Option<HashMap<String, GCloudConfig>>,
     pub ssh: Option<HashMap<String, SshConfig>>,
     pub git: Option<HashMap<String, GitConfig>>,
+    pub localhost: Option<HashMap<String, LocalhostConfig>>,
     // services
     pub folders: Option<HashMap<String, FoldersConfig>>,
     pub postgres: Option<HashMap<String, PostgreSqlConfig>>,
