@@ -7,6 +7,7 @@ use bacup::backup::Backup;
 use bacup::config::Config;
 
 use bacup::remotes::aws::AwsBucket;
+use bacup::remotes::git::Git;
 use bacup::remotes::localhost::Localhost;
 use bacup::remotes::ssh::Ssh;
 
@@ -101,6 +102,18 @@ async fn main() -> Result<(), i32> {
             }
         }
         None => warn!("No localhost remotes configured."),
+    }
+
+    match config.git {
+        Some(host) => {
+            for (name, config) in host {
+                remotes.insert(
+                    format!("git.{}", name),
+                    Box::new(Git::new(config, &name).unwrap()),
+                );
+            }
+        }
+        None => warn!("No Git remotes configured."),
     }
 
     let mut services: HashMap<String, Box<dyn Service>> = HashMap::new();

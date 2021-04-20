@@ -53,14 +53,15 @@ When configuring the backups, the field **when** accepts configuration strings i
 
     [localhost.disk2]
     path = "" # local path where the second disk of the machine is mounted
-# Not available yet!
-#[git]
-#    [git.github]
-#    host = ""
-#    port = ""
-#    username = ""
-#    private_key = "" # ~/.ssh/id_rsa
-#    branch = "" # backup branch
+
+[git]
+    [git.github]
+    host = "" #github.com
+    port = "" #22
+    username = "" #git
+    private_key = "" # ~/.ssh/id_rsa
+    repository = "" # "galeone/bacup"
+    branch = "" # master
 
 # what to backup. Service definition
 [postgres]
@@ -122,6 +123,13 @@ When configuring the backups, the field **when** accepts configuration strings i
     where = "localhost.samba"
     when = "daily 01:00"
     remote_path = "/path/inside/the/samba/location"
+    compress = false
+
+    [backup.service1_source_git]
+    what = "folders.service1"
+    where = "git.github"
+    when = "daily 15:30"
+    remote_path = "/" # the root of the repo
     compress = false
 ```
 

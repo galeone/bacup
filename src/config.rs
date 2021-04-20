@@ -6,12 +6,13 @@ use std::string::String;
 use std::fmt;
 use std::fs;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct GitConfig {
     pub host: String,
     pub port: u16,
     pub username: String,
     pub private_key: String,
+    pub repository: String,
     pub branch: String,
 }
 
