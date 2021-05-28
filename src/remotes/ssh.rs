@@ -149,11 +149,7 @@ impl Ssh {
         }
 
         let rsync_cmd = which("rsync")?;
-        args.remove(
-            args.iter()
-                .position(|x| x == "true")
-                .unwrap(),
-        ); // remove "true"
+        args.remove(args.iter().position(|x| x == "true").unwrap()); // remove "true"
         let ssh_args = args.iter().map(|s| s.to_string()).collect();
         Ok(Ssh {
             remote_name: String::from(remote_name),
