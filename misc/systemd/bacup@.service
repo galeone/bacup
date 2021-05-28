@@ -1,0 +1,15 @@
+[Unit]
+Description=Bacup - An easy-to-use backup tool designed for servers
+Documentation=https://github.com/galeone/bacup
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Restart=on-failure
+User=%I
+Type=simple
+WorkingDirectory=/home/%I/.bacup/
+ExecStart=/home/%I/.cargo/bin/bacup -vv
+
+[Install]
+WantedBy=multi-user.target

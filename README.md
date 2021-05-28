@@ -1,14 +1,16 @@
 # bacup
 
-An easy-to-use backup tool designed for servers.
+An easy-to-use backup tool designed for servers - written in Rust.
 
-## Server
+---
 
-The server is the bacup service: it runs as a deamon and executes the backup of the **services** on the **remotes**.
+## Bacup
+
+The bacup service runs as a deamon and executes the backup of the **services** on the **remotes**.
 
 The goal of bacup is to make the configuration straightforward: a single file where defining everything in a very simple way.
 
-### Server configuration
+## Configuration
 
 3 steps configuration.
 
@@ -139,17 +141,26 @@ When `compression = true`, the file/folder are compressed using Gzip and the fil
 YYYY-MM-DD-hh:mm-filename.gz # or .tar.gz if filename is an archive
 ```
 
-## Running the server
+## Installation & service setup
 
-You need to build the `server` binary
-
-```bash
-cargo build # or cargo build --release
 ```
-And then you have 2 options:
+cargo install bacup
+```
 
-1. Put the `config.toml` next to the executable.
-2. Use the `CONF_FILE` env variable, to configure the location of the configuration file.
+Then put the `config.toml` file in `$HOME/.bacup/config.toml`.
+
+There's a ready to use `systemd` service file:
+
+```
+sudo cp misc/systemd/bacup@.service /usr/lib/systemd/system/
+```
+
+then, the service can be enabled/started in the usual systemd way:
+
+```
+sudo systemctl start bacup@$USER.service
+sudo syustemct enable bacup@$USER.service
+```
 
 ## Remote configuration
 
@@ -159,3 +170,17 @@ Configuring the remotes is straightforward. Every remote have a different way of
 
 - Access Key & Secret Key: [Understanding and getting your AWS credentials: programmatic access](https://docs.aws.amazon.com/general/latest/gr/aws-sec-cred-types.html#access-keys-and-secret-access-keys)
 - Region: the region is the region of your bucket.
+
+### SSH
+
+You need a valid ssh account on your remote - only authentication via SSH key without passphrase is supported.
+
+For incremental backup `rsync` is used - you need this tool installed locally and remotely.
+
+### Git
+
+You need a valid account on a Git server, together with a repository. Only SSH is supported.
+
+### Localhost
+
+Not properly a remote, but you can use `bacup` to bacup from a path to another (with/without compression). If the localhost remote is mounted on a network filesystem it's better :)
