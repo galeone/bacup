@@ -49,7 +49,7 @@ pub struct FoldersConfig {
     pub pattern: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct BackupConfig {
     pub what: String,
     pub r#where: String,

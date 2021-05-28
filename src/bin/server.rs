@@ -75,6 +75,7 @@ async fn main() -> Result<(), i32> {
                     format!("aws.{}", bucket_name),
                     Box::new(AwsBucket::new(bucket_config, &bucket_name).await.unwrap()),
                 );
+                info!("Remote aws.{} configured", bucket_name);
             }
         }
         None => warn!("No AWS cloud configured."),
@@ -87,6 +88,7 @@ async fn main() -> Result<(), i32> {
                     format!("ssh.{}", hostname),
                     Box::new(Ssh::new(config, &hostname).unwrap()),
                 );
+                info!("Remote ssh.{} configured", hostname);
             }
         }
         None => warn!("No Ssh remotes configured."),
@@ -99,6 +101,7 @@ async fn main() -> Result<(), i32> {
                     format!("localhost.{}", name),
                     Box::new(Localhost::new(config, &name).unwrap()),
                 );
+                info!("Remote localhost.{} configured", name);
             }
         }
         None => warn!("No localhost remotes configured."),
@@ -111,6 +114,7 @@ async fn main() -> Result<(), i32> {
                     format!("git.{}", name),
                     Box::new(Git::new(config, &name).unwrap()),
                 );
+                info!("Remote git.{} configured", name);
             }
         }
         None => warn!("No Git remotes configured."),
@@ -167,10 +171,11 @@ async fn main() -> Result<(), i32> {
                 &backup_name,
                 dyn_clone::clone_box(&*remotes[&config.r#where]),
                 dyn_clone::clone_box(&*services[&config.what]),
-                config,
+                &config,
             )
             .unwrap(),
         );
+        info!("Backup {} -> {} configured", config.what, config.r#where);
     }
 
     let mut scheduler = JobScheduler::new();

@@ -221,7 +221,7 @@ impl Backup {
         name: &str,
         remote: Box<dyn uploader::Uploader>,
         service: Box<dyn Service>,
-        config: BackupConfig,
+        config: &BackupConfig,
     ) -> Result<Backup, Error> {
         let when_to_schedule = Backup::parse_when(&config.when);
         let to_parse: &str;
@@ -242,8 +242,8 @@ impl Backup {
             name: String::from(name),
             what: service,
             r#where: remote,
-            remote_path: PathBuf::from(config.remote_path),
-            when: config.when,
+            remote_path: PathBuf::from(config.remote_path.clone()),
+            when: config.when.clone(),
             compress: config.compress,
             schedule: schedule.unwrap(),
         })

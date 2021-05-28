@@ -55,7 +55,7 @@ When configuring the backups, the field **when** accepts configuration strings i
     path = "" # local path where the second disk of the machine is mounted
 
 [git]
-    [git.github]
+    [git.remote_repo]
     host = "" #github.com
     port = "" #22
     username = "" #git

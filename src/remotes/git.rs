@@ -156,6 +156,9 @@ impl uploader::Uploader for Git {
 
         // cp file <repo_location>/[<subdir>]
         let dest = repo.join(remote_path.strip_prefix("/").unwrap());
+        if !dest.exists() {
+            std::fs::create_dir_all(&dest).unwrap();
+        }
         std::fs::copy(path, dest.join(path.file_name().unwrap()))?;
 
         // cd <repo path>
@@ -170,6 +173,11 @@ impl uploader::Uploader for Git {
         // git switch -c branch (ignore failures - we might be in the branch already)
         Command::new(&self.git_cmd)
             .args(&["switch", "-c", &self.config.branch])
+            .status()?;
+
+        // git pull origin branch (ignore failures)
+        Command::new(&self.git_cmd)
+            .args(&["pull", "origin", &self.config.branch])
             .status()?;
 
         // git add . -A
@@ -239,8 +247,20 @@ impl uploader::Uploader for Git {
 
         // cp file <repo_location>/[<subdir>]
         let dest = repo.join(remote_path.strip_prefix("/").unwrap());
+        if !dest.exists() {
+            std::fs::create_dir_all(&dest).unwrap();
+        }
+        let git_folder = std::path::Component::Normal(".git".as_ref());
         for path in paths.iter() {
-            std::fs::copy(path, dest.join(path.file_name().unwrap()))?;
+            // Skip .git and content of this folder
+            if path.components().any(|x| x == git_folder) {
+                continue;
+            }
+            if path.is_dir() {
+                std::fs::create_dir_all(dest.join(path.file_name().unwrap()))?;
+            } else {
+                std::fs::copy(path, dest.join(path.file_name().unwrap()))?;
+            }
         }
 
         // cd <repo path>
@@ -255,6 +275,11 @@ impl uploader::Uploader for Git {
         // git switch -c branch (ignore failures - we might be in the branch already)
         Command::new(&self.git_cmd)
             .args(&["switch", "-c", &self.config.branch])
+            .status()?;
+
+        // git pull origin branch (ignore failures)
+        Command::new(&self.git_cmd)
+            .args(&["pull", "origin", &self.config.branch])
             .status()?;
 
         // git add . -A
