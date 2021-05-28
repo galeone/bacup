@@ -4,8 +4,6 @@ An easy-to-use backup tool designed for servers - written in Rust.
 
 ---
 
-## Bacup
-
 The bacup service runs as a deamon and executes the backup of the **services** on the **remotes**.
 
 The goal of bacup is to make the configuration straightforward: a single file where defining everything in a very simple way.
@@ -159,7 +157,7 @@ then, the service can be enabled/started in the usual systemd way:
 
 ```
 sudo systemctl start bacup@$USER.service
-sudo syustemct enable bacup@$USER.service
+sudo systemctl enable bacup@$USER.service
 ```
 
 ## Remote configuration
