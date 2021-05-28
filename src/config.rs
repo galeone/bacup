@@ -6,12 +6,13 @@ use std::string::String;
 use std::fmt;
 use std::fs;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct GitConfig {
     pub host: String,
     pub port: u16,
     pub username: String,
     pub private_key: String,
+    pub repository: String,
     pub branch: String,
 }
 
@@ -48,7 +49,7 @@ pub struct FoldersConfig {
     pub pattern: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct BackupConfig {
     pub what: String,
     pub r#where: String,

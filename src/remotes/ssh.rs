@@ -14,6 +14,8 @@ use std::path::{Path, PathBuf};
 use std::fmt;
 use std::string::String;
 
+use log::warn;
+
 use async_trait::async_trait;
 
 use std::process::{Command, Stdio};
@@ -85,32 +87,69 @@ impl Ssh {
         let host = format!("{}@{}", config.username, config.host);
         let mut args = vec![format!("-p{}", port), host, String::from("true")];
 
-        let status = Command::new(&ssh_cmd)
-            .args(&args)
-            .stdout(Stdio::null())
-            .status();
-        if status.is_err() {
-            return Err(Error::RuntimeError(status.err().unwrap()));
-        }
-
-        let status = status.unwrap();
-
-        if !status.success() {
+        let output = Command::new(&ssh_cmd).args(&args).output();
+        if output.is_err() {
             return Err(Error::RuntimeError(io::Error::new(
                 io::ErrorKind::Other,
                 format!(
-                    "ssh connection to {}@{}:{} failed with exit code {}",
+                    "ssh connection to {}@{}:{} failed with error: {}",
                     config.username,
                     config.host,
                     config.port,
-                    status.code().unwrap(),
+                    output.err().unwrap(),
                 ),
             )));
         }
 
-        let rsync_cmd = which("rsync")?;
+        let output = output.unwrap();
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let stderr = String::from_utf8(output.stderr).unwrap();
 
-        args.pop(); // remove "true" command
+        if stdout.is_empty() && stderr.contains("true") {
+            // like on github.com -> can connect, can't execute anything on the shell
+            // and we receive a message like
+            //
+            // Invalid command: 'true'
+            //   You appear to be using ssh to clone a git:// URL.
+            //   Make sure your core.gitProxy config option and the
+            //   GIT_PROXY_COMMAND environment variable are NOT set.
+            //
+            // But anyway this is a success since the connection was succesfull.
+            warn!(
+                "Connection to  {}@{}:{} succeded, but received: {}",
+                config.username, config.host, config.port, stderr
+            );
+        } else {
+            // In normal circumstances we repeat the connection capturing only the status
+            // somehow with the Command API it's not possibile to get output and status :S
+
+            let status = Command::new(&ssh_cmd)
+                .args(&args)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+            if status.is_err() {
+                return Err(Error::RuntimeError(status.err().unwrap()));
+            }
+
+            let status = status.unwrap();
+
+            if !status.success() {
+                return Err(Error::RuntimeError(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!(
+                        "ssh connection to {}@{}:{} failed with status: {}",
+                        config.username,
+                        config.host,
+                        config.port,
+                        status.code().unwrap(),
+                    ),
+                )));
+            }
+        }
+
+        let rsync_cmd = which("rsync")?;
+        args.remove(args.iter().position(|x| x == "true").unwrap()); // remove "true"
         let ssh_args = args.iter().map(|s| s.to_string()).collect();
         Ok(Ssh {
             remote_name: String::from(remote_name),
