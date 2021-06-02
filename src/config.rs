@@ -59,6 +59,12 @@ pub struct PostgreSqlConfig {
 }
 
 #[derive(Serialize, Deserialize)]
+pub struct DockerConfig {
+    pub container_name: String,
+    pub command: String,
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct FoldersConfig {
     pub pattern: String,
 }
@@ -88,6 +94,7 @@ pub struct Config {
     // services
     pub folders: Option<HashMap<String, FoldersConfig>>,
     pub postgres: Option<HashMap<String, PostgreSqlConfig>>,
+    pub docker: Option<HashMap<String, DockerConfig>>,
     // mapping
     pub backup: HashMap<String, BackupConfig>,
 }
