@@ -27,6 +27,7 @@ use bacup::remotes::ssh::Ssh;
 
 use bacup::remotes::uploader::Uploader;
 
+use bacup::services::docker::Docker;
 use bacup::services::folders::Folder;
 use bacup::services::postgresql::PostgreSql;
 use bacup::services::service::Service;
@@ -155,6 +156,18 @@ async fn main() -> Result<(), i32> {
             }
         }
         None => warn!("No PostgreSql to backup."),
+    }
+    match config.docker {
+        Some(docker) => {
+            for (service_name, instance_config) in docker {
+                let key = format!("docker.{}", service_name);
+                services.insert(
+                    key,
+                    Box::new(Docker::new(instance_config, &service_name).unwrap()),
+                );
+            }
+        }
+        None => warn!("No Docker to backup."),
     }
 
     let mut backup: HashMap<String, Backup> = HashMap::new();

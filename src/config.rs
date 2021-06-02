@@ -94,6 +94,7 @@ pub struct Config {
     // services
     pub folders: Option<HashMap<String, FoldersConfig>>,
     pub postgres: Option<HashMap<String, PostgreSqlConfig>>,
+    pub docker: Option<HashMap<String, DockerConfig>>,
     // mapping
     pub backup: HashMap<String, BackupConfig>,
 }
