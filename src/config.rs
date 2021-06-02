@@ -59,6 +59,12 @@ pub struct PostgreSqlConfig {
 }
 
 #[derive(Serialize, Deserialize)]
+pub struct DockerConfig {
+    pub container_name: String,
+    pub command: String,
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct FoldersConfig {
     pub pattern: String,
 }

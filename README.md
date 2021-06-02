@@ -75,6 +75,11 @@ When configuring the backups, the field **when** accepts configuration strings i
     [folders.service1]
     pattern = ""
 
+[docker]
+    [docker.service]
+    container_name = "docker_postgres_1"
+    command = "pg_dumpall -c -U postgres" # dump to stdout always
+
 # mapping services to remote
 [backup]
     # Compress the DB dump and upload it to aws
