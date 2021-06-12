@@ -56,7 +56,7 @@ impl Docker {
             Ok(cmd) => cmd,
         };
 
-        let args = vec!["run", "hello-world"];
+        let args = vec!["run", "--rm", "hello-world"];
         let status = Command::new(&cmd)
             .args(&args)
             .stdout(Stdio::null())
