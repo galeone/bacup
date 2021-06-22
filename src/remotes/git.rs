@@ -165,6 +165,13 @@ impl uploader::Uploader for Git {
         self.remote_name.clone()
     }
 
+    async fn enumerate(&self, _remote_path: &Path) -> Result<Vec<String>, uploader::Error> {
+        Err(uploader::Error::LocalError(io::Error::new(
+            io::ErrorKind::Other,
+            "enumerate is not possibile on Git remote!",
+        )))
+    }
+
     async fn upload_file(&self, path: &Path, remote_path: &Path) -> Result<(), uploader::Error> {
         let repo = self.clone_repository()?;
 

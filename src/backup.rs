@@ -56,6 +56,7 @@ pub struct Backup {
     pub when: String,
     pub compress: bool,
     pub schedule: cron::Schedule,
+    pub keep_last: Option<u32>,
 }
 
 impl Backup {
@@ -88,7 +89,7 @@ impl Backup {
             if !input.is_empty() {
                 return Err(Error::InvalidWhenConfiguration(format!(
                     "Expected to consume all the when string, unable to parse \
-                    remeaining part: {}",
+                    remaining part: {}",
                     input
                 )));
             }
@@ -139,7 +140,7 @@ impl Backup {
                 if !vec!["", "weekly"].contains(&input) {
                     return Err(Error::InvalidWhenConfiguration(format!(
                         "Expected to consume all the when string, unable to parse \
-                        remeaining part: {}",
+                        remaining part: {}",
                         input
                     )));
                 }
@@ -225,7 +226,7 @@ impl Backup {
             "Unable to parse for:\n\
         Daily: {}\n
         Weekly: {}\n
-        Montly: {}",
+        Monthly: {}",
             daily.unwrap_err(),
             weekly.unwrap_err(),
             monthly.unwrap_err()
@@ -260,6 +261,7 @@ impl Backup {
             when: config.when.clone(),
             compress: config.compress,
             schedule: schedule.unwrap(),
+            keep_last: config.keep_last,
         })
     }
 
@@ -273,6 +275,7 @@ impl Backup {
         let compress = self.compress;
         let name = self.name;
         let remote_prefix = self.remote_path;
+        let keep_last = self.keep_last;
 
         let log_result = |result: Result<(), uploader::Error>,
                           name: &str,
@@ -398,13 +401,24 @@ impl Backup {
                     // outside this loop
                     result =
                         executor::block_on(remote.upload_folder_compressed(&file, &remote_path));
+                } else if compress {
+                    result = executor::block_on(remote.upload_file_compressed(&file, &remote_path));
+                    if let Some(to_keep) = keep_last {
+                        match executor::block_on(remote.enumerate(&remote_path.parent().unwrap())) {
+                            Ok(list) => {
+                                info!("OK list for remote_path {}", remote_path.display());
+                                for f in &list {
+                                    info!("{}", f);
+                                }
+                                if list.len() > to_keep as usize {}
+                            }
+                            Err(error) => error!("Error during remote.enumerate: {}", error),
+                        }
+                    }
                 } else {
-                    result = if compress {
-                        executor::block_on(remote.upload_file_compressed(&file, &remote_path))
-                    } else {
-                        executor::block_on(remote.upload_file(&file, &remote_path))
-                    };
+                    result = executor::block_on(remote.upload_file(&file, &remote_path));
                 }
+
                 log_result(result, &name, &file, &remote.name(), &remote_path, compress);
             }
 

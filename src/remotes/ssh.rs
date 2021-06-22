@@ -181,6 +181,35 @@ impl uploader::Uploader for Ssh {
         self.remote_name.clone()
     }
 
+    async fn enumerate(&self, remote_path: &Path) -> Result<Vec<String>, uploader::Error> {
+        let remote_path = remote_path.to_str().unwrap();
+        // ssh -Pxxx user@host "ls remote_path"
+        let mut ssh = Command::new(&self.ssh_cmd)
+            .args(
+                self.ssh_args
+                    .iter()
+                    .chain(once(&format!("ls {}", remote_path))),
+            )
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()?;
+
+        let status = ssh.wait()?;
+
+        if status.success() {
+            let stdout = ssh.stdout.as_mut().unwrap();
+            let mut output = String::new();
+            stdout.read_to_string(&mut output).unwrap();
+            return Ok(output.split_whitespace().map(|s| s.to_string()).collect());
+        }
+
+        Err(uploader::Error::LocalError(io::Error::new(
+            io::ErrorKind::Other,
+            format!("Error during ls {} on remote host", remote_path),
+        )))
+    }
+
     async fn upload_file(&self, path: &Path, remote_path: &Path) -> Result<(), uploader::Error> {
         // Read file
         let mut content: Vec<u8> = vec![];

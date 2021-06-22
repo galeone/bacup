@@ -67,6 +67,8 @@ pub trait Uploader: DynClone {
     async fn upload_folder(&self, paths: &[PathBuf], remote_path: &Path) -> Result<(), Error>;
     async fn upload_file_compressed(&self, path: &Path, remote_path: &Path) -> Result<(), Error>;
     async fn upload_folder_compressed(&self, path: &Path, remote_path: &Path) -> Result<(), Error>;
+    async fn enumerate(&self, remote_path: &Path) -> Result<Vec<String>, Error>;
+
     fn name(&self) -> String;
 
     fn compress_folder(&self, path: &Path) -> Result<NamedTempFile, Error> {

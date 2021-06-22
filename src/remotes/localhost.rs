@@ -76,6 +76,15 @@ impl uploader::Uploader for Localhost {
         self.name.clone()
     }
 
+    async fn enumerate(&self, remote_path: &Path) -> Result<Vec<String>, uploader::Error> {
+        Ok(fs::read_dir(remote_path)?
+            .map(|res| {
+                res.map(|e| String::from(e.path().to_str().unwrap()))
+                    .unwrap()
+            })
+            .collect())
+    }
+
     async fn upload_file(&self, path: &Path, remote_path: &Path) -> Result<(), uploader::Error> {
         if !path.exists() {
             return Err(uploader::Error::LocalError(io::Error::new(

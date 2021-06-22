@@ -23,6 +23,8 @@ use std::io::prelude::*;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
+use log::info;
+
 use async_trait::async_trait;
 
 use std::fmt;
@@ -77,10 +79,10 @@ impl AwsBucket {
         bucket
             .list(String::from("/"), Some(String::from("/")))
             .await?;
-        return Ok(AwsBucket {
+        Ok(AwsBucket {
             name: String::from(bucket_name),
             bucket,
-        });
+        })
     }
 }
 
@@ -88,6 +90,29 @@ impl AwsBucket {
 impl uploader::Uploader for AwsBucket {
     fn name(&self) -> String {
         self.name.clone()
+    }
+
+    async fn enumerate(&self, remote_path: &Path) -> Result<Vec<String>, uploader::Error> {
+        info!("aws.enumerate for {}", remote_path.display());
+        let mut remote_path = remote_path.to_path_buf();
+        remote_path.push("");
+        let remote_path = String::from(remote_path.to_str().unwrap());
+        info!("listing {}", remote_path);
+        let result = self
+            .bucket
+            .list(String::from(""), Some(String::from("/")))
+            .await?;
+
+        let mut ret = Vec::new();
+        info!("aws: {}", result.len());
+        for res in &result {
+            info!("{}", res.name);
+            for f in &res.contents {
+                info!("key: {}", f.key);
+                ret.push(f.key.clone())
+            }
+        }
+        Ok(ret)
     }
 
     async fn upload_file(&self, path: &Path, remote_path: &Path) -> Result<(), uploader::Error> {
