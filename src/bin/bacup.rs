@@ -25,7 +25,7 @@ use bacup::remotes::git::Git;
 use bacup::remotes::localhost::Localhost;
 use bacup::remotes::ssh::Ssh;
 
-use bacup::remotes::uploader::Uploader;
+use bacup::remotes::remote::Remote;
 
 use bacup::services::docker::Docker;
 use bacup::services::folders::Folder;
@@ -81,7 +81,7 @@ async fn main() -> Result<(), i32> {
         }
     };
 
-    let mut remotes: HashMap<String, Box<dyn Uploader>> = HashMap::new();
+    let mut remotes: HashMap<String, Box<dyn Remote>> = HashMap::new();
 
     match config.aws {
         Some(aws) => {

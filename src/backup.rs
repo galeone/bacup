@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::config::BackupConfig;
-use crate::remotes::uploader;
+use crate::remotes::remote;
 use crate::services::service::Service;
 
 use job_scheduler::{Job, JobScheduler};
@@ -51,11 +51,12 @@ impl fmt::Display for Error {
 pub struct Backup {
     pub name: String,
     pub what: Box<dyn Service>,
-    pub r#where: Box<dyn uploader::Uploader>,
+    pub r#where: Box<dyn remote::Remote>,
     pub remote_path: PathBuf,
     pub when: String,
     pub compress: bool,
     pub schedule: cron::Schedule,
+    pub keep_last: Option<u32>,
 }
 
 impl Backup {
@@ -88,7 +89,7 @@ impl Backup {
             if !input.is_empty() {
                 return Err(Error::InvalidWhenConfiguration(format!(
                     "Expected to consume all the when string, unable to parse \
-                    remeaining part: {}",
+                    remaining part: {}",
                     input
                 )));
             }
@@ -139,7 +140,7 @@ impl Backup {
                 if !vec!["", "weekly"].contains(&input) {
                     return Err(Error::InvalidWhenConfiguration(format!(
                         "Expected to consume all the when string, unable to parse \
-                        remeaining part: {}",
+                        remaining part: {}",
                         input
                     )));
                 }
@@ -225,7 +226,7 @@ impl Backup {
             "Unable to parse for:\n\
         Daily: {}\n
         Weekly: {}\n
-        Montly: {}",
+        Monthly: {}",
             daily.unwrap_err(),
             weekly.unwrap_err(),
             monthly.unwrap_err()
@@ -233,7 +234,7 @@ impl Backup {
     }
     pub fn new(
         name: &str,
-        remote: Box<dyn uploader::Uploader>,
+        remote: Box<dyn remote::Remote>,
         service: Box<dyn Service>,
         config: &BackupConfig,
     ) -> Result<Backup, Error> {
@@ -260,6 +261,7 @@ impl Backup {
             when: config.when.clone(),
             compress: config.compress,
             schedule: schedule.unwrap(),
+            keep_last: config.keep_last,
         })
     }
 
@@ -273,8 +275,9 @@ impl Backup {
         let compress = self.compress;
         let name = self.name;
         let remote_prefix = self.remote_path;
+        let keep_last = self.keep_last;
 
-        let log_result = |result: Result<(), uploader::Error>,
+        let log_result = |result: Result<(), remote::Error>,
                           name: &str,
                           file: &Path,
                           remote_name: &str,
@@ -392,19 +395,44 @@ impl Backup {
                     remote_prefix.join(file.strip_prefix(local_prefix).unwrap())
                 };
 
-                let result: Result<(), uploader::Error>;
+                let result: Result<(), remote::Error>;
                 if file.is_dir() {
                     // compress for sure, the uncompressed scenarios has been treated
                     // outside this loop
                     result =
                         executor::block_on(remote.upload_folder_compressed(&file, &remote_path));
+                } else if compress {
+                    result = executor::block_on(remote.upload_file_compressed(&file, &remote_path));
+                    if let Some(to_keep) = keep_last {
+                        let to_keep = to_keep as usize;
+                        match executor::block_on(remote.enumerate(&remote_path.parent().unwrap())) {
+                            Ok(mut list) => {
+                                if list.len() > to_keep {
+                                    list.sort();
+                                    list.reverse();
+                                    for delete_me in &list[to_keep..] {
+                                        if let Some(error) = executor::block_on(
+                                            remote.delete(&PathBuf::from(delete_me)),
+                                        )
+                                        .err()
+                                        {
+                                            error!(
+                                                "[{}] Error during delete of {}: {}",
+                                                name, delete_me, error
+                                            );
+                                        } else {
+                                            info!("[{}] Deleted {}", name, delete_me);
+                                        }
+                                    }
+                                }
+                            }
+                            Err(error) => error!("Error during remote.enumerate: {}", error),
+                        }
+                    }
                 } else {
-                    result = if compress {
-                        executor::block_on(remote.upload_file_compressed(&file, &remote_path))
-                    } else {
-                        executor::block_on(remote.upload_file(&file, &remote_path))
-                    };
+                    result = executor::block_on(remote.upload_file(&file, &remote_path));
                 }
+
                 log_result(result, &name, &file, &remote.name(), &remote_path, compress);
             }
 

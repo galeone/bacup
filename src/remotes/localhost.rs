@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::config::LocalhostConfig;
-use crate::remotes::uploader;
+use crate::remotes::remote;
 
 use std::io::prelude::*;
 
@@ -71,14 +71,48 @@ impl Localhost {
 }
 
 #[async_trait]
-impl uploader::Uploader for Localhost {
+impl remote::Remote for Localhost {
     fn name(&self) -> String {
         self.name.clone()
     }
 
-    async fn upload_file(&self, path: &Path, remote_path: &Path) -> Result<(), uploader::Error> {
+    async fn enumerate(&self, remote_path: &Path) -> Result<Vec<String>, remote::Error> {
+        let remote_path = if remote_path.is_absolute() {
+            remote_path.strip_prefix("/").unwrap()
+        } else {
+            remote_path
+        };
+
+        let remote_path = self.path.join(remote_path);
+        Ok(fs::read_dir(remote_path)?
+            .map(|res| {
+                res.map(|e| {
+                    String::from(e.path().strip_prefix(&self.path).unwrap().to_str().unwrap())
+                })
+                .unwrap()
+            })
+            .collect())
+    }
+
+    async fn delete(&self, remote_path: &Path) -> Result<(), remote::Error> {
+        let remote_path = if remote_path.is_absolute() {
+            remote_path.strip_prefix("/").unwrap()
+        } else {
+            remote_path
+        };
+
+        let remote_path = self.path.join(remote_path);
+        if remote_path.is_dir() {
+            tokio::fs::remove_dir_all(remote_path).await?;
+        } else {
+            tokio::fs::remove_file(remote_path).await?;
+        }
+        Ok(())
+    }
+
+    async fn upload_file(&self, path: &Path, remote_path: &Path) -> Result<(), remote::Error> {
         if !path.exists() {
-            return Err(uploader::Error::LocalError(io::Error::new(
+            return Err(remote::Error::LocalError(io::Error::new(
                 io::ErrorKind::Other,
                 format!("{} does not exist", path.display()),
             )));
@@ -102,7 +136,7 @@ impl uploader::Uploader for Localhost {
         &self,
         path: &Path,
         remote_path: &Path,
-    ) -> Result<(), uploader::Error> {
+    ) -> Result<(), remote::Error> {
         let compressed_bytes = self.compress_file(path)?;
         let remote_path = if remote_path.is_absolute() {
             remote_path.strip_prefix("/").unwrap()
@@ -126,7 +160,7 @@ impl uploader::Uploader for Localhost {
         &self,
         paths: &[PathBuf],
         remote_path: &Path,
-    ) -> Result<(), uploader::Error> {
+    ) -> Result<(), remote::Error> {
         let mut local_prefix = paths.iter().min_by(|a, b| a.cmp(b)).unwrap();
         // The local_prefix found is the shortest path inside the folder we want to backup.
 
@@ -168,9 +202,9 @@ impl uploader::Uploader for Localhost {
         &self,
         path: &Path,
         remote_path: &Path,
-    ) -> Result<(), uploader::Error> {
+    ) -> Result<(), remote::Error> {
         if !path.is_dir() {
-            return Err(uploader::Error::NotADirectory);
+            return Err(remote::Error::NotADirectory);
         }
         let remote_path = self.remote_archive_path(remote_path);
         let compressed_folder = self.compress_folder(path)?;
@@ -183,7 +217,7 @@ impl uploader::Uploader for Localhost {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::remotes::uploader::Uploader;
+    use crate::remotes::remote::Remote;
 
     use crate::services::folders::Folder;
     use crate::services::service::Service;

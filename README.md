@@ -90,6 +90,7 @@ When configuring the backups, the field **when** accepts configuration strings i
     when = "daily 01:00"
     remote_path = "/service1/database/"
     compress = true
+    keep_last = 7
 
     # Dump the DB and upload it to aws (no compression)
     # every first day of the month

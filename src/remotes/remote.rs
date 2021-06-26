@@ -27,12 +27,14 @@ use std::io::prelude::*;
 
 use dyn_clone::DynClone;
 
+use crate::remotes::aws::Error as AWSError;
+
 use tempfile::NamedTempFile;
 
 #[derive(Debug)]
 pub enum Error {
     LocalError(std::io::Error),
-    RemoteError(s3::S3Error),
+    RemoteError(AWSError),
     CompressionError,
     NotADirectory,
 }
@@ -43,8 +45,8 @@ impl From<std::io::Error> for Error {
     }
 }
 
-impl From<s3::S3Error> for Error {
-    fn from(error: s3::S3Error) -> Self {
+impl From<AWSError> for Error {
+    fn from(error: AWSError) -> Self {
         Error::RemoteError(error)
     }
 }
@@ -54,19 +56,22 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::LocalError(error) => write!(f, "Local (IO) error: {}", error),
-            Error::RemoteError(error) => write!(f, "AWS Remote error: {}", error),
             Error::CompressionError => write!(f, "Unable to compress the file/folder"),
             Error::NotADirectory => write!(f, "The specified file is not a directory"),
+            Error::RemoteError(error) => write!(f, "Remote error: {}", error),
         }
     }
 }
 
 #[async_trait]
-pub trait Uploader: DynClone {
+pub trait Remote: DynClone {
     async fn upload_file(&self, path: &Path, remote_path: &Path) -> Result<(), Error>;
     async fn upload_folder(&self, paths: &[PathBuf], remote_path: &Path) -> Result<(), Error>;
     async fn upload_file_compressed(&self, path: &Path, remote_path: &Path) -> Result<(), Error>;
     async fn upload_folder_compressed(&self, path: &Path, remote_path: &Path) -> Result<(), Error>;
+    async fn enumerate(&self, remote_path: &Path) -> Result<Vec<String>, Error>;
+    async fn delete(&self, remote_path: &Path) -> Result<(), Error>;
+
     fn name(&self) -> String;
 
     fn compress_folder(&self, path: &Path) -> Result<NamedTempFile, Error> {

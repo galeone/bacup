@@ -76,6 +76,7 @@ pub struct BackupConfig {
     pub when: String,
     pub remote_path: String,
     pub compress: bool,
+    pub keep_last: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize)]
