@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use crate::config::{GitConfig, SshConfig};
+use crate::remotes::remote;
 use crate::remotes::ssh;
-use crate::remotes::uploader;
 
 use std::fs::File;
 
@@ -77,19 +77,19 @@ impl fmt::Display for Error {
     }
 }
 
-impl From<Error> for uploader::Error {
+impl From<Error> for remote::Error {
     fn from(error: Error) -> Self {
         match error {
             Error::CommandNotFound(error) => {
-                uploader::Error::LocalError(std::io::Error::new(std::io::ErrorKind::Other, error))
+                remote::Error::LocalError(std::io::Error::new(std::io::ErrorKind::Other, error))
             }
             Error::InvalidPrivateKey(msg) => {
-                uploader::Error::LocalError(std::io::Error::new(std::io::ErrorKind::Other, msg))
+                remote::Error::LocalError(std::io::Error::new(std::io::ErrorKind::Other, msg))
             }
             Error::RuntimeError(error) => {
-                uploader::Error::LocalError(std::io::Error::new(std::io::ErrorKind::Other, error))
+                remote::Error::LocalError(std::io::Error::new(std::io::ErrorKind::Other, error))
             }
-            Error::DoesNotExist(path) => uploader::Error::LocalError(std::io::Error::new(
+            Error::DoesNotExist(path) => remote::Error::LocalError(std::io::Error::new(
                 std::io::ErrorKind::Other,
                 path.to_str().unwrap(),
             )),
@@ -160,19 +160,26 @@ impl Git {
 }
 
 #[async_trait]
-impl uploader::Uploader for Git {
+impl remote::Remote for Git {
     fn name(&self) -> String {
         self.remote_name.clone()
     }
 
-    async fn enumerate(&self, _remote_path: &Path) -> Result<Vec<String>, uploader::Error> {
-        Err(uploader::Error::LocalError(io::Error::new(
+    async fn enumerate(&self, _remote_path: &Path) -> Result<Vec<String>, remote::Error> {
+        Err(remote::Error::LocalError(io::Error::new(
             io::ErrorKind::Other,
             "enumerate is not possibile on Git remote!",
         )))
     }
 
-    async fn upload_file(&self, path: &Path, remote_path: &Path) -> Result<(), uploader::Error> {
+    async fn delete(&self, _remote_path: &Path) -> Result<(), remote::Error> {
+        Err(remote::Error::LocalError(io::Error::new(
+            io::ErrorKind::Other,
+            "delete makes no sense on git remote. Change the repo, and upload the new repo status.",
+        )))
+    }
+
+    async fn upload_file(&self, path: &Path, remote_path: &Path) -> Result<(), remote::Error> {
         let repo = self.clone_repository()?;
 
         // cp file <repo_location>/[<subdir>]
@@ -206,7 +213,7 @@ impl uploader::Uploader for Git {
             .args(&["add", ".", "-A"])
             .status()?;
         if !status.success() {
-            return Err(uploader::Error::LocalError(io::Error::new(
+            return Err(remote::Error::LocalError(io::Error::new(
                 io::ErrorKind::Other,
                 format!("Unable to execute git add . -A into {}", dest.display()),
             )));
@@ -216,7 +223,7 @@ impl uploader::Uploader for Git {
             .args(&["commit", "-m", "[bacup] snapshot"])
             .status()?;
         if !status.success() {
-            return Err(uploader::Error::LocalError(io::Error::new(
+            return Err(remote::Error::LocalError(io::Error::new(
                 io::ErrorKind::Other,
                 format!(
                     "Unable to execute git commit -m [bacup] snapshot into {}",
@@ -229,7 +236,7 @@ impl uploader::Uploader for Git {
             .args(&["push", "origin", &self.config.branch])
             .status()?;
         if !status.success() {
-            return Err(uploader::Error::LocalError(io::Error::new(
+            return Err(remote::Error::LocalError(io::Error::new(
                 io::ErrorKind::Other,
                 format!("Unable to execute git add . -A into {}", dest.display()),
             )));
@@ -241,7 +248,7 @@ impl uploader::Uploader for Git {
         &self,
         path: &Path,
         remote_path: &Path,
-    ) -> Result<(), uploader::Error> {
+    ) -> Result<(), remote::Error> {
         // Read and compress
         let compressed_bytes = self.compress_file(path)?;
         let remote_path = self.remote_compressed_file_path(remote_path);
@@ -263,7 +270,7 @@ impl uploader::Uploader for Git {
         &self,
         paths: &[PathBuf],
         remote_path: &Path,
-    ) -> Result<(), uploader::Error> {
+    ) -> Result<(), remote::Error> {
         let repo = self.clone_repository()?;
 
         // cp file <repo_location>/[<subdir>]
@@ -308,7 +315,7 @@ impl uploader::Uploader for Git {
             .args(&["add", ".", "-A"])
             .status()?;
         if !status.success() {
-            return Err(uploader::Error::LocalError(io::Error::new(
+            return Err(remote::Error::LocalError(io::Error::new(
                 io::ErrorKind::Other,
                 format!("Unable to execute git add . -A into {}", dest.display()),
             )));
@@ -318,7 +325,7 @@ impl uploader::Uploader for Git {
             .args(&["commit", "-m", "[bacup] snapshot"])
             .status()?;
         if !status.success() {
-            return Err(uploader::Error::LocalError(io::Error::new(
+            return Err(remote::Error::LocalError(io::Error::new(
                 io::ErrorKind::Other,
                 format!(
                     "Unable to execute git commit -m [bacup] snapshot into {}",
@@ -331,7 +338,7 @@ impl uploader::Uploader for Git {
             .args(&["push", "origin", &self.config.branch])
             .status()?;
         if !status.success() {
-            return Err(uploader::Error::LocalError(io::Error::new(
+            return Err(remote::Error::LocalError(io::Error::new(
                 io::ErrorKind::Other,
                 format!("Unable to execute git add . -A into {}", dest.display()),
             )));
@@ -343,9 +350,9 @@ impl uploader::Uploader for Git {
         &self,
         path: &Path,
         remote_path: &Path,
-    ) -> Result<(), uploader::Error> {
+    ) -> Result<(), remote::Error> {
         if !path.is_dir() {
-            return Err(uploader::Error::NotADirectory);
+            return Err(remote::Error::NotADirectory);
         }
 
         let remote_path = self.remote_archive_path(remote_path);

@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::config::SshConfig;
-use crate::remotes::uploader;
+use crate::remotes::remote;
 
 use std::fs;
 use std::fs::File;
@@ -176,19 +176,23 @@ impl Ssh {
 }
 
 #[async_trait]
-impl uploader::Uploader for Ssh {
+impl remote::Remote for Ssh {
     fn name(&self) -> String {
         self.remote_name.clone()
     }
 
-    async fn enumerate(&self, remote_path: &Path) -> Result<Vec<String>, uploader::Error> {
+    async fn enumerate(&self, remote_path: &Path) -> Result<Vec<String>, remote::Error> {
         let remote_path = remote_path.to_str().unwrap();
-        // ssh -Pxxx user@host "ls remote_path"
+        // ssh -Pxxx user@host "find remote_path/*"
+        // use find path/* instead of ls path
+        // because find returns the fullpath
+        // the /* is needed to return the content
+        // and not the path itself
         let mut ssh = Command::new(&self.ssh_cmd)
             .args(
                 self.ssh_args
                     .iter()
-                    .chain(once(&format!("ls {}", remote_path))),
+                    .chain(once(&format!("find {}/*", remote_path))),
             )
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -204,13 +208,39 @@ impl uploader::Uploader for Ssh {
             return Ok(output.split_whitespace().map(|s| s.to_string()).collect());
         }
 
-        Err(uploader::Error::LocalError(io::Error::new(
+        Err(remote::Error::LocalError(io::Error::new(
             io::ErrorKind::Other,
             format!("Error during ls {} on remote host", remote_path),
         )))
     }
 
-    async fn upload_file(&self, path: &Path, remote_path: &Path) -> Result<(), uploader::Error> {
+    async fn delete(&self, remote_path: &Path) -> Result<(), remote::Error> {
+        let remote_path = remote_path.to_str().unwrap();
+        // ssh -Pxxx user@host "rm -r remote_path"
+        let mut ssh = Command::new(&self.ssh_cmd)
+            .args(
+                self.ssh_args
+                    .iter()
+                    .chain(once(&format!("rm -r {}", remote_path))),
+            )
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?;
+
+        let status = ssh.wait()?;
+
+        if status.success() {
+            return Ok(());
+        }
+
+        Err(remote::Error::LocalError(io::Error::new(
+            io::ErrorKind::Other,
+            format!("Error during rm -r {} on remote host", remote_path),
+        )))
+    }
+
+    async fn upload_file(&self, path: &Path, remote_path: &Path) -> Result<(), remote::Error> {
         // Read file
         let mut content: Vec<u8> = vec![];
         let mut file = File::open(path)?;
@@ -252,7 +282,7 @@ impl uploader::Uploader for Ssh {
                 Stderr: {}\nStdout: {}",
                 errlog, outlog
             );
-            return Err(uploader::Error::LocalError(io::Error::new(
+            return Err(remote::Error::LocalError(io::Error::new(
                 io::ErrorKind::Other,
                 message,
             )));
@@ -264,7 +294,7 @@ impl uploader::Uploader for Ssh {
         &self,
         path: &Path,
         remote_path: &Path,
-    ) -> Result<(), uploader::Error> {
+    ) -> Result<(), remote::Error> {
         // Read and compress
         let compressed_bytes = self.compress_file(path)?;
         let remote_path = self.remote_compressed_file_path(remote_path);
@@ -282,7 +312,7 @@ impl uploader::Uploader for Ssh {
         ssh.stdin.as_mut().unwrap().write_all(&compressed_bytes)?;
         let status = ssh.wait()?;
         if !status.success() {
-            return Err(uploader::Error::LocalError(io::Error::new(
+            return Err(remote::Error::LocalError(io::Error::new(
                 io::ErrorKind::Other,
                 "Failure while executing ssh command",
             )));
@@ -294,7 +324,7 @@ impl uploader::Uploader for Ssh {
         &self,
         paths: &[PathBuf],
         remote_path: &Path,
-    ) -> Result<(), uploader::Error> {
+    ) -> Result<(), remote::Error> {
         let mut local_prefix = paths.iter().min_by(|a, b| a.cmp(b)).unwrap();
         // The local_prefix found is:
         // In case of a folder: the shortest path inside the folder we want to backup.
@@ -325,7 +355,7 @@ impl uploader::Uploader for Ssh {
             .status()?;
 
         if !status.success() {
-            return Err(uploader::Error::LocalError(io::Error::new(
+            return Err(remote::Error::LocalError(io::Error::new(
                 io::ErrorKind::Other,
                 "Failed to execute rsync trought ssh command",
             )));
@@ -338,9 +368,9 @@ impl uploader::Uploader for Ssh {
         &self,
         path: &Path,
         remote_path: &Path,
-    ) -> Result<(), uploader::Error> {
+    ) -> Result<(), remote::Error> {
         if !path.is_dir() {
-            return Err(uploader::Error::NotADirectory);
+            return Err(remote::Error::NotADirectory);
         }
 
         let remote_path = self.remote_archive_path(remote_path);

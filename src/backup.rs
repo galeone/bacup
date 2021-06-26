@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::config::BackupConfig;
-use crate::remotes::uploader;
+use crate::remotes::remote;
 use crate::services::service::Service;
 
 use job_scheduler::{Job, JobScheduler};
@@ -51,7 +51,7 @@ impl fmt::Display for Error {
 pub struct Backup {
     pub name: String,
     pub what: Box<dyn Service>,
-    pub r#where: Box<dyn uploader::Uploader>,
+    pub r#where: Box<dyn remote::Remote>,
     pub remote_path: PathBuf,
     pub when: String,
     pub compress: bool,
@@ -234,7 +234,7 @@ impl Backup {
     }
     pub fn new(
         name: &str,
-        remote: Box<dyn uploader::Uploader>,
+        remote: Box<dyn remote::Remote>,
         service: Box<dyn Service>,
         config: &BackupConfig,
     ) -> Result<Backup, Error> {
@@ -277,7 +277,7 @@ impl Backup {
         let remote_prefix = self.remote_path;
         let keep_last = self.keep_last;
 
-        let log_result = |result: Result<(), uploader::Error>,
+        let log_result = |result: Result<(), remote::Error>,
                           name: &str,
                           file: &Path,
                           remote_name: &str,
@@ -395,7 +395,7 @@ impl Backup {
                     remote_prefix.join(file.strip_prefix(local_prefix).unwrap())
                 };
 
-                let result: Result<(), uploader::Error>;
+                let result: Result<(), remote::Error>;
                 if file.is_dir() {
                     // compress for sure, the uncompressed scenarios has been treated
                     // outside this loop
@@ -404,13 +404,27 @@ impl Backup {
                 } else if compress {
                     result = executor::block_on(remote.upload_file_compressed(&file, &remote_path));
                     if let Some(to_keep) = keep_last {
+                        let to_keep = to_keep as usize;
                         match executor::block_on(remote.enumerate(&remote_path.parent().unwrap())) {
-                            Ok(list) => {
-                                info!("OK list for remote_path {}", remote_path.display());
-                                for f in &list {
-                                    info!("{}", f);
+                            Ok(mut list) => {
+                                if list.len() > to_keep {
+                                    list.sort();
+                                    list.reverse();
+                                    for delete_me in &list[to_keep..] {
+                                        if let Some(error) = executor::block_on(
+                                            remote.delete(&PathBuf::from(delete_me)),
+                                        )
+                                        .err()
+                                        {
+                                            error!(
+                                                "[{}] Error during delete of {}: {}",
+                                                name, delete_me, error
+                                            );
+                                        } else {
+                                            info!("[{}] Deleted {}", name, delete_me);
+                                        }
+                                    }
                                 }
-                                if list.len() > to_keep as usize {}
                             }
                             Err(error) => error!("Error during remote.enumerate: {}", error),
                         }
