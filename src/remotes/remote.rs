@@ -31,6 +31,8 @@ use crate::remotes::aws::Error as AWSError;
 
 use tempfile::NamedTempFile;
 
+use log::info;
+
 #[derive(Debug)]
 pub enum Error {
     LocalError(std::io::Error),
@@ -75,6 +77,7 @@ pub trait Remote: DynClone {
     fn name(&self) -> String;
 
     fn compress_folder(&self, path: &Path) -> Result<NamedTempFile, Error> {
+        info!("Compressing folder {}...", path.display());
         let archive_path = NamedTempFile::new()?;
 
         let archive = std::fs::File::create(&archive_path)?;
@@ -87,10 +90,12 @@ pub trait Remote: DynClone {
         if enc_res.is_err() {
             return Err(Error::CompressionError);
         }
+        info!("Compression of folder {} done.", path.display());
         Ok(archive_path)
     }
 
     fn compress_file(&self, path: &Path) -> Result<Vec<u8>, Error> {
+        info!("Compressing file {}...", path.display());
         let mut content: Vec<u8> = vec![];
         let mut file = match std::fs::File::open(path) {
             Ok(file) => file,
@@ -102,10 +107,12 @@ pub trait Remote: DynClone {
         let mut e = GzEncoder::new(Vec::new(), Compression::default());
         e.write_all(&content)?;
 
-        match e.finish() {
+        let ret = match e.finish() {
             Ok(bytes) => Ok(bytes),
             Err(_) => Err(Error::CompressionError),
-        }
+        };
+        info!("Compression of file {} done.", path.display());
+        ret
     }
 
     fn remote_archive_path(&self, remote_path: &Path) -> PathBuf {
