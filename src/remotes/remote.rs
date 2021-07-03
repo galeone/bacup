@@ -111,7 +111,7 @@ pub trait Remote: DynClone {
             Ok(bytes) => Ok(bytes),
             Err(_) => Err(Error::CompressionError),
         };
-        info!("Compression of folder {} done.", path.display());
+        info!("Compression of file {} done.", path.display());
         ret
     }
 
