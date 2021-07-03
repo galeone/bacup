@@ -307,6 +307,7 @@ impl Backup {
 
         let job = Job::new(self.schedule, move || {
             // First call dump, to trigger the dump service if present
+            info!("[{}] Calling dump...", name);
             let dump = match service.dump() {
                 Err(error) => {
                     error!("{}", Error::GeneralError(error));
@@ -373,6 +374,11 @@ impl Backup {
             // The remote should handle eventual incremental backup.
             if !single_file && all_with_same_prefix && !compress {
                 let remote_path = &remote_prefix;
+                info!(
+                    "[{}] Uploading a list of files to {}",
+                    name,
+                    remote_path.display()
+                );
                 let result = executor::block_on(remote.upload_folder(&local_files, remote_path));
                 log_result(
                     result,
@@ -382,6 +388,7 @@ impl Backup {
                     &remote_path,
                     compress,
                 );
+                info!("[{}] Uploaded completed.", name);
                 // Set local_files to empty vector for skipping the next loop
                 // and avoid to add another else branch that will increase the
                 // indentation again.
@@ -399,14 +406,33 @@ impl Backup {
                 if file.is_dir() {
                     // compress for sure, the uncompressed scenarios has been treated
                     // outside this loop
+                    info!(
+                        "[{}] Compressing folder {} and uploading to {}",
+                        name,
+                        file.display(),
+                        remote_path.display()
+                    );
                     result =
                         executor::block_on(remote.upload_folder_compressed(&file, &remote_path));
                 } else if compress {
+                    info!(
+                        "[{}] Compressing file {} and uploading to {}",
+                        name,
+                        file.display(),
+                        remote_path.display()
+                    );
                     result = executor::block_on(remote.upload_file_compressed(&file, &remote_path));
                 } else {
+                    info!(
+                        "[{}] Uploading file {} to {}",
+                        name,
+                        file.display(),
+                        remote_path.display()
+                    );
                     result = executor::block_on(remote.upload_file(&file, &remote_path));
                 }
 
+                // Handle keep_last
                 if let Some(to_keep) = keep_last {
                     let to_keep = to_keep as usize;
                     match executor::block_on(remote.enumerate(&remote_path.parent().unwrap())) {
