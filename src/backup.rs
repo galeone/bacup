@@ -403,34 +403,34 @@ impl Backup {
                         executor::block_on(remote.upload_folder_compressed(&file, &remote_path));
                 } else if compress {
                     result = executor::block_on(remote.upload_file_compressed(&file, &remote_path));
-                    if let Some(to_keep) = keep_last {
-                        let to_keep = to_keep as usize;
-                        match executor::block_on(remote.enumerate(&remote_path.parent().unwrap())) {
-                            Ok(mut list) => {
-                                if list.len() > to_keep {
-                                    list.sort();
-                                    list.reverse();
-                                    for delete_me in &list[to_keep..] {
-                                        if let Some(error) = executor::block_on(
-                                            remote.delete(&PathBuf::from(delete_me)),
-                                        )
-                                        .err()
-                                        {
-                                            error!(
-                                                "[{}] Error during delete of {}: {}",
-                                                name, delete_me, error
-                                            );
-                                        } else {
-                                            info!("[{}] Deleted {}", name, delete_me);
-                                        }
+                } else {
+                    result = executor::block_on(remote.upload_file(&file, &remote_path));
+                }
+
+                if let Some(to_keep) = keep_last {
+                    let to_keep = to_keep as usize;
+                    match executor::block_on(remote.enumerate(&remote_path.parent().unwrap())) {
+                        Ok(mut list) => {
+                            if list.len() > to_keep {
+                                list.sort();
+                                list.reverse();
+                                for delete_me in &list[to_keep..] {
+                                    if let Some(error) =
+                                        executor::block_on(remote.delete(&PathBuf::from(delete_me)))
+                                            .err()
+                                    {
+                                        error!(
+                                            "[{}] Error during delete of {}: {}",
+                                            name, delete_me, error
+                                        );
+                                    } else {
+                                        info!("[{}] Deleted {}", name, delete_me);
                                     }
                                 }
                             }
-                            Err(error) => error!("Error during remote.enumerate: {}", error),
                         }
+                        Err(error) => error!("Error during remote.enumerate: {}", error),
                     }
-                } else {
-                    result = executor::block_on(remote.upload_file(&file, &remote_path));
                 }
 
                 log_result(result, &name, &file, &remote.name(), &remote_path, compress);
