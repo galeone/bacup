@@ -385,7 +385,7 @@ impl Backup {
                     &name,
                     local_prefix,
                     &remote.name(),
-                    &remote_path,
+                    remote_path,
                     compress,
                 );
                 info!("[{}] Uploaded completed.", name);
@@ -435,7 +435,7 @@ impl Backup {
                 // Handle keep_last
                 if let Some(to_keep) = keep_last {
                     let to_keep = to_keep as usize;
-                    match executor::block_on(remote.enumerate(&remote_path.parent().unwrap())) {
+                    match executor::block_on(remote.enumerate(remote_path.parent().unwrap())) {
                         Ok(mut list) => {
                             if list.len() > to_keep {
                                 list.sort();

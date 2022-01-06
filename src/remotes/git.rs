@@ -16,10 +16,7 @@ use crate::config::{GitConfig, SshConfig};
 use crate::remotes::remote;
 use crate::remotes::ssh;
 
-use std::fs::File;
-
 use std::io;
-use std::io::Write;
 
 use std::path::{Path, PathBuf};
 
@@ -180,14 +177,16 @@ impl remote::Remote for Git {
     }
 
     async fn upload_file(&self, path: &Path, remote_path: &Path) -> Result<(), remote::Error> {
+        use tokio::fs;
+
         let repo = self.clone_repository()?;
 
         // cp file <repo_location>/[<subdir>]
         let dest = repo.join(remote_path.strip_prefix("/").unwrap());
         if !dest.exists() {
-            std::fs::create_dir_all(&dest).unwrap();
+            fs::create_dir_all(&dest).await.unwrap();
         }
-        std::fs::copy(path, dest.join(path.file_name().unwrap()))?;
+        fs::copy(path, dest.join(path.file_name().unwrap())).await?;
 
         // cd <repo path>
         let cwd = std::env::current_dir()?;
@@ -249,17 +248,21 @@ impl remote::Remote for Git {
         path: &Path,
         remote_path: &Path,
     ) -> Result<(), remote::Error> {
+        use tokio::fs;
+        use tokio::fs::File;
+        use tokio::io::AsyncWriteExt;
+
         // Read and compress
         let compressed_bytes = self.compress_file(path)?;
         let remote_path = self.remote_compressed_file_path(remote_path);
 
-        let mut buffer = File::create(&remote_path)?;
-        buffer.write_all(&compressed_bytes)?;
+        let mut buffer = File::create(&remote_path).await?;
+        buffer.write_all(&compressed_bytes).await?;
 
         defer! {
             #[allow(unused_must_use)]
             {
-                std::fs::remove_file(&remote_path);
+                fs::remove_file(&remote_path);
             }
         }
         self.upload_file(&remote_path, &remote_path).await?;
@@ -271,12 +274,13 @@ impl remote::Remote for Git {
         paths: &[PathBuf],
         remote_path: &Path,
     ) -> Result<(), remote::Error> {
+        use tokio::fs;
         let repo = self.clone_repository()?;
 
         // cp file <repo_location>/[<subdir>]
         let dest = repo.join(remote_path.strip_prefix("/").unwrap());
         if !dest.exists() {
-            std::fs::create_dir_all(&dest).unwrap();
+            fs::create_dir_all(&dest).await.unwrap();
         }
         let git_folder = std::path::Component::Normal(".git".as_ref());
         for path in paths.iter() {
@@ -285,9 +289,9 @@ impl remote::Remote for Git {
                 continue;
             }
             if path.is_dir() {
-                std::fs::create_dir_all(dest.join(path.file_name().unwrap()))?;
+                fs::create_dir_all(dest.join(path.file_name().unwrap())).await?;
             } else {
-                std::fs::copy(path, dest.join(path.file_name().unwrap()))?;
+                fs::copy(path, dest.join(path.file_name().unwrap())).await?;
             }
         }
 

@@ -223,6 +223,6 @@ async fn main() -> Result<(), i32> {
 
     loop {
         scheduler.tick();
-        std::thread::sleep(Duration::from_millis(500));
+        tokio::time::sleep(Duration::from_millis(500)).await;
     }
 }

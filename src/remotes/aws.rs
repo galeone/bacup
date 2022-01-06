@@ -20,9 +20,6 @@ use rusoto_s3::S3;
 use crate::config::AwsConfig;
 use crate::remotes::remote;
 
-use std::io::prelude::*;
-
-use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use rusoto_core::credential::CredentialsError;
@@ -171,9 +168,13 @@ impl remote::Remote for AwsBucket {
     }
 
     async fn upload_file(&self, path: &Path, remote_path: &Path) -> Result<(), remote::Error> {
+        use tokio::fs::File;
+        use tokio::io::AsyncReadExt;
+
         let mut content: Vec<u8> = vec![];
-        let mut file = File::open(path)?;
-        file.read_to_end(&mut content)?;
+        let mut file = File::open(path).await?;
+        file.read_to_end(&mut content).await?;
+
         let remote_path = remote_path.to_str().unwrap();
         self.bucket.put_object(remote_path, content).await?;
         Ok(())

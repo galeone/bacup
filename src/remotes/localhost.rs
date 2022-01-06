@@ -15,9 +15,6 @@
 use crate::config::LocalhostConfig;
 use crate::remotes::remote;
 
-use std::io::prelude::*;
-
-use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -77,6 +74,8 @@ impl remote::Remote for Localhost {
     }
 
     async fn enumerate(&self, remote_path: &Path) -> Result<Vec<String>, remote::Error> {
+        use tokio::fs;
+
         let remote_path = if remote_path.is_absolute() {
             remote_path.strip_prefix("/").unwrap()
         } else {
@@ -84,17 +83,25 @@ impl remote::Remote for Localhost {
         };
 
         let remote_path = self.path.join(remote_path);
-        Ok(fs::read_dir(remote_path)?
-            .map(|res| {
-                res.map(|e| {
-                    String::from(e.path().strip_prefix(&self.path).unwrap().to_str().unwrap())
-                })
-                .unwrap()
-            })
-            .collect())
+        let mut paths = fs::read_dir(remote_path).await?;
+        let mut ret: Vec<String> = vec![];
+        while let Some(entry) = paths.next_entry().await? {
+            ret.push(
+                entry
+                    .path()
+                    .strip_prefix(&self.path)
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .to_string(),
+            )
+        }
+        Ok(ret)
     }
 
     async fn delete(&self, remote_path: &Path) -> Result<(), remote::Error> {
+        use tokio::fs;
+
         let remote_path = if remote_path.is_absolute() {
             remote_path.strip_prefix("/").unwrap()
         } else {
@@ -103,14 +110,16 @@ impl remote::Remote for Localhost {
 
         let remote_path = self.path.join(remote_path);
         if remote_path.is_dir() {
-            tokio::fs::remove_dir_all(remote_path).await?;
+            fs::remove_dir_all(remote_path).await?;
         } else {
-            tokio::fs::remove_file(remote_path).await?;
+            fs::remove_file(remote_path).await?;
         }
         Ok(())
     }
 
     async fn upload_file(&self, path: &Path, remote_path: &Path) -> Result<(), remote::Error> {
+        use tokio::fs;
+
         if !path.exists() {
             return Err(remote::Error::LocalError(io::Error::new(
                 io::ErrorKind::Other,
@@ -126,9 +135,9 @@ impl remote::Remote for Localhost {
 
         let dest = self.path.join(remote_path.parent().unwrap());
         if !dest.exists() {
-            fs::create_dir_all(&dest)?;
+            fs::create_dir_all(&dest).await?;
         }
-        fs::copy(path, dest.join(remote_path.file_name().unwrap()))?;
+        fs::copy(path, dest.join(remote_path.file_name().unwrap())).await?;
         Ok(())
     }
 
@@ -137,6 +146,9 @@ impl remote::Remote for Localhost {
         path: &Path,
         remote_path: &Path,
     ) -> Result<(), remote::Error> {
+        use tokio::fs;
+        use tokio::io::AsyncWriteExt;
+
         let compressed_bytes = self.compress_file(path)?;
         let remote_path = if remote_path.is_absolute() {
             remote_path.strip_prefix("/").unwrap()
@@ -145,14 +157,14 @@ impl remote::Remote for Localhost {
         };
         let parent = self.path.join(remote_path.parent().unwrap());
         if !parent.exists() {
-            fs::create_dir_all(&parent)?;
+            fs::create_dir_all(&parent).await?;
         }
         let remote_path = parent.join(
             self.remote_compressed_file_path(&PathBuf::from(remote_path.file_name().unwrap())),
         );
 
-        let mut buffer = fs::File::create(remote_path)?;
-        buffer.write_all(&compressed_bytes)?;
+        let mut buffer = fs::File::create(remote_path).await?;
+        buffer.write_all(&compressed_bytes).await?;
         Ok(())
     }
 
@@ -161,6 +173,8 @@ impl remote::Remote for Localhost {
         paths: &[PathBuf],
         remote_path: &Path,
     ) -> Result<(), remote::Error> {
+        use tokio::fs;
+
         let mut local_prefix = paths.iter().min_by(|a, b| a.cmp(b)).unwrap();
         // The local_prefix found is the shortest path inside the folder we want to backup.
 
@@ -189,9 +203,9 @@ impl remote::Remote for Localhost {
                     .join(remote_prefix.join(path.strip_prefix(local_prefix).unwrap()));
                 let parent = dest.parent().unwrap();
                 if !parent.exists() {
-                    fs::create_dir_all(parent)?;
+                    fs::create_dir_all(parent).await?;
                 }
-                fs::copy(path, dest)?;
+                fs::copy(path, dest).await?;
             }
         }
 

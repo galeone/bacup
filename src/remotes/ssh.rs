@@ -15,9 +15,6 @@
 use crate::config::SshConfig;
 use crate::remotes::remote;
 
-use std::fs;
-use std::fs::File;
-
 use std::io;
 use std::io::prelude::*;
 use std::io::Write;
@@ -77,6 +74,8 @@ pub struct Ssh {
 
 impl Ssh {
     pub fn new(config: SshConfig, remote_name: &str) -> Result<Ssh, Error> {
+        use std::fs;
+
         let ssh_cmd = which("ssh")?;
 
         let private_key = shellexpand::tilde(&config.private_key).to_string();
@@ -241,10 +240,13 @@ impl remote::Remote for Ssh {
     }
 
     async fn upload_file(&self, path: &Path, remote_path: &Path) -> Result<(), remote::Error> {
+        use tokio::fs::File;
+        use tokio::io::AsyncReadExt;
+
         // Read file
         let mut content: Vec<u8> = vec![];
-        let mut file = File::open(path)?;
-        file.read_to_end(&mut content)?;
+        let mut file = File::open(path).await?;
+        file.read_to_end(&mut content).await?;
         let remote_path = remote_path.to_str().unwrap();
 
         // cat file | ssh -Pxxx user@host "cat > file"
