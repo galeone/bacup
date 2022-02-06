@@ -12,68 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use rusoto_core::credential::StaticProvider;
-use rusoto_core::{HttpClient, Region};
-use rusoto_s3::S3Client;
-use rusoto_s3::S3;
+pub use aws_sdk_s3::Error;
+use aws_sdk_s3::{Client, Region};
+use aws_types::credentials::SharedCredentialsProvider;
 
 use crate::config::AwsConfig;
 use crate::remotes::remote;
 
 use std::path::{Path, PathBuf};
 
-use rusoto_core::credential::CredentialsError;
-use rusoto_core::RusotoError;
-use rusoto_s3::{DeleteObjectError, ListObjectsV2Error, PutObjectError};
-
 use async_trait::async_trait;
-
-use std::fmt;
-
-#[derive(Debug)]
-pub enum Error {
-    InvalidCredentials(RusotoError<CredentialsError>),
-    ListError(RusotoError<ListObjectsV2Error>),
-    PutError(RusotoError<PutObjectError>),
-    DeleteError(RusotoError<DeleteObjectError>),
-}
-
-impl From<RusotoError<CredentialsError>> for Error {
-    fn from(error: RusotoError<CredentialsError>) -> Self {
-        Error::InvalidCredentials(error)
-    }
-}
-
-impl From<RusotoError<ListObjectsV2Error>> for Error {
-    fn from(error: RusotoError<ListObjectsV2Error>) -> Self {
-        Error::ListError(error)
-    }
-}
-
-impl From<RusotoError<PutObjectError>> for Error {
-    fn from(error: RusotoError<PutObjectError>) -> Self {
-        Error::PutError(error)
-    }
-}
-
-impl From<RusotoError<DeleteObjectError>> for Error {
-    fn from(error: RusotoError<DeleteObjectError>) -> Self {
-        Error::DeleteError(error)
-    }
-}
-
-impl std::error::Error for Error {}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Error::InvalidCredentials(error) => write!(f, "Invalid credentials: {}", error),
-            Error::ListError(error) => write!(f, "AWS List V2 error error: {}", error),
-            Error::PutError(error) => write!(f, "AWS Put object error: {}", error),
-            Error::DeleteError(error) => write!(f, "AWS delete object error: {}", error),
-        }
-    }
-}
 
 #[derive(Clone)]
 pub struct AwsBucket {
@@ -83,7 +31,7 @@ pub struct AwsBucket {
 
 #[derive(Clone)]
 struct Bucket {
-    client: S3Client,
+    client: Client,
     bucket_name: String,
 }
 
@@ -91,11 +39,10 @@ impl Bucket {
     pub async fn list(&self, prefix: &str) -> Result<Vec<String>, Error> {
         let response = self
             .client
-            .list_objects_v2(rusoto_s3::ListObjectsV2Request {
-                bucket: self.bucket_name.to_owned(),
-                prefix: Some(prefix.trim_start_matches('/').to_owned()),
-                ..Default::default()
-            })
+            .list_objects_v2()
+            .bucket(&self.bucket_name)
+            .prefix(prefix.trim_start_matches('/'))
+            .send()
             .await?;
         let mut ret: Vec<String> = vec![];
         for res in response.contents.iter() {
@@ -108,37 +55,45 @@ impl Bucket {
 
     pub async fn put_object(&self, remote_path: &str, content: Vec<u8>) -> Result<(), Error> {
         self.client
-            .put_object(rusoto_s3::PutObjectRequest {
-                bucket: self.bucket_name.clone(),
-                key: remote_path.trim_start_matches('/').to_owned(),
-                body: Some(content.into()),
-                ..Default::default()
-            })
+            .put_object()
+            .bucket(&self.bucket_name)
+            .key(remote_path.trim_start_matches('/'))
+            .body(content.into())
+            .send()
             .await?;
         Ok(())
     }
 
     pub async fn delete(&self, remote_path: &str) -> Result<(), Error> {
         self.client
-            .delete_object(rusoto_s3::DeleteObjectRequest {
-                bucket: self.bucket_name.clone(),
-                key: remote_path.to_owned(),
-                ..Default::default()
-            })
+            .delete_object()
+            .bucket(&self.bucket_name)
+            .key(remote_path)
+            .send()
             .await?;
+
         Ok(())
     }
 }
 
 impl AwsBucket {
     pub async fn new(config: AwsConfig, bucket_name: &str) -> Result<AwsBucket, Error> {
-        let region: Region = config.region.parse::<Region>().unwrap();
+        let region = Region::new(config.region);
+        let config = aws_config::from_env()
+            .region(region)
+            .credentials_provider(SharedCredentialsProvider::new(
+                aws_types::credentials::Credentials::from_keys(
+                    config.access_key,
+                    config.secret_key,
+                    None,
+                ),
+            ))
+            .load()
+            .await;
+        let client = Client::new(&config);
+
         let bucket = Bucket {
-            client: S3Client::new_with(
-                HttpClient::new().unwrap(),
-                StaticProvider::new(config.access_key, config.secret_key, None, None),
-                region,
-            ),
+            client,
             bucket_name: bucket_name.to_owned(),
         };
 
