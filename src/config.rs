@@ -1,4 +1,4 @@
-// Copyright 2021 Paolo Galeone <nessuno@nerdz.eu>
+// Copyright 2022 Paolo Galeone <nessuno@nerdz.eu>
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,7 +18,7 @@ use std::path::Path;
 use std::string::String;
 
 use std::fmt;
-use std::fs;
+use tokio::{fs, io};
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct GitConfig {
@@ -102,7 +102,7 @@ pub struct Config {
 
 #[derive(Debug)]
 pub enum Error {
-    Open(std::io::Error),
+    Open(io::Error),
     Parse(toml::de::Error),
 }
 
@@ -116,8 +116,8 @@ impl fmt::Display for Error {
     }
 }
 
-impl From<std::io::Error> for Error {
-    fn from(error: std::io::Error) -> Self {
+impl From<io::Error> for Error {
+    fn from(error: io::Error) -> Self {
         Error::Open(error)
     }
 }
@@ -129,8 +129,8 @@ impl From<toml::de::Error> for Error {
 }
 
 impl Config {
-    pub fn new(path: &Path) -> Result<Config, Error> {
-        let txt = fs::read_to_string(path)?;
+    pub async fn new(path: &Path) -> Result<Config, Error> {
+        let txt = fs::read_to_string(path).await?;
         let config: Config = toml::from_str(&txt)?;
         Ok(config)
     }
