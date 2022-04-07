@@ -1,4 +1,4 @@
-// Copyright 2021 Paolo Galeone <nessuno@nerdz.eu>
+// Copyright 2022 Paolo Galeone <nessuno@nerdz.eu>
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,17 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::fmt;
-use std::io;
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
-use std::string::String;
-use std::vec::Vec;
+use std::{fmt, path::PathBuf, process::Stdio, string::String, vec::Vec};
+use tokio::process::Command;
+
+use async_trait::async_trait;
+use which::which;
+
+use tokio::io;
 
 use crate::config::PostgreSqlConfig;
 use crate::services::service::{Dump, Service};
-
-use which::which;
 
 #[derive(Clone)]
 pub struct PostgreSql {
@@ -51,7 +50,7 @@ impl fmt::Display for Error {
 }
 
 impl PostgreSql {
-    pub fn new(config: PostgreSqlConfig, name: &str) -> Result<PostgreSql, Error> {
+    pub async fn new(config: PostgreSqlConfig, name: &str) -> Result<PostgreSql, Error> {
         let username = &config.username;
         let db_name = &config.db_name;
         let host = &config.host.unwrap_or_else(|| String::from("localhost"));
@@ -73,7 +72,11 @@ impl PostgreSql {
             db_name,
         ];
 
-        let status = Command::new(cmd).args(&args).stdout(Stdio::null()).status();
+        let status = Command::new(cmd)
+            .args(&args)
+            .stdout(Stdio::null())
+            .status()
+            .await;
         if status.is_err() {
             return Err(Error::RuntimeError(status.err().unwrap()));
         }
@@ -96,7 +99,7 @@ impl PostgreSql {
         let query = format!(r#"SELECT 1 FROM pg_database WHERE datname='{}'"#, db_name);
         args.push(&query);
 
-        let output = match Command::new(cmd).args(&args).output() {
+        let output = match Command::new(cmd).args(&args).output().await {
             Err(error) => return Err(Error::RuntimeError(error)),
             Ok(output) => output,
         };
@@ -142,6 +145,7 @@ impl PostgreSql {
     }
 }
 
+#[async_trait]
 impl Service for PostgreSql {
     fn list(&self) -> Vec<PathBuf> {
         if self.dumped_to != PathBuf::new() {
@@ -150,7 +154,7 @@ impl Service for PostgreSql {
         return vec![];
     }
 
-    fn dump(&mut self) -> Result<Dump, Box<dyn std::error::Error>> {
+    async fn dump(&mut self) -> Result<Dump, Box<dyn std::error::Error>> {
         let dest = std::env::current_dir()
             .unwrap()
             .join(PathBuf::from(format!("{}-dump.sql", self.name)));
@@ -170,6 +174,7 @@ impl Service for PostgreSql {
                     .chain(&["-f".to_string(), dest.to_str().unwrap().to_string()]),
             )
             .status()
+            .await
         {
             Ok(_) => {
                 self.dumped_to = dest.clone();
@@ -203,65 +208,65 @@ mod tests {
         }
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore]
-    fn test_new_connection_ok() {
+    async fn test_new_connection_ok() {
         let config = PostgreSqlConfig {
             username: String::from(USERNAME),
             db_name: String::from(DB_NAME),
             host: Some(String::from(HOST)),
             port: Some(PORT),
         };
-        assert!(PostgreSql::new(config, NAME).is_ok());
+        assert!(PostgreSql::new(config, NAME).await.is_ok());
     }
 
-    #[test]
-    fn test_new_connection_fail_username() {
+    #[tokio::test]
+    async fn test_new_connection_fail_username() {
         let config = PostgreSqlConfig {
             username: String::from("wat"),
             db_name: String::from(DB_NAME),
             host: Some(String::from(HOST)),
             port: Some(PORT),
         };
-        assert!(PostgreSql::new(config, NAME).is_err());
+        assert!(PostgreSql::new(config, NAME).await.is_err());
     }
 
-    #[test]
-    fn test_new_connection_fail_db_name() {
+    #[tokio::test]
+    async fn test_new_connection_fail_db_name() {
         let config = PostgreSqlConfig {
             username: String::from(USERNAME),
             db_name: String::from("wat"),
             host: Some(String::from(HOST)),
             port: Some(PORT),
         };
-        assert!(PostgreSql::new(config, NAME).is_err());
+        assert!(PostgreSql::new(config, NAME).await.is_err());
     }
 
-    #[test]
-    fn test_new_connection_fail_host() {
+    #[tokio::test]
+    async fn test_new_connection_fail_host() {
         let config = PostgreSqlConfig {
             username: String::from(USERNAME),
             db_name: String::from(DB_NAME),
             host: Some(String::from("wat")),
             port: Some(PORT),
         };
-        assert!(PostgreSql::new(config, NAME).is_err());
+        assert!(PostgreSql::new(config, NAME).await.is_err());
     }
 
-    #[test]
-    fn test_new_connection_fail_port() {
+    #[tokio::test]
+    async fn test_new_connection_fail_port() {
         let config = PostgreSqlConfig {
             username: String::from(USERNAME),
             db_name: String::from(DB_NAME),
             host: Some(String::from(HOST)),
             port: Some(69),
         };
-        assert!(PostgreSql::new(config, NAME).is_err());
+        assert!(PostgreSql::new(config, NAME).await.is_err());
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore]
-    fn test_dump_success() {
+    async fn test_dump_success() {
         let config = PostgreSqlConfig {
             username: String::from(USERNAME),
             db_name: String::from(DB_NAME),
@@ -269,7 +274,7 @@ mod tests {
             port: Some(PORT),
         };
 
-        let mut db = PostgreSql::new(config, NAME).unwrap();
-        assert!(db.dump().is_ok());
+        let mut db = PostgreSql::new(config, NAME).await.unwrap();
+        assert!(db.dump().await.is_ok());
     }
 }

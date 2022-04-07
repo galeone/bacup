@@ -1,4 +1,4 @@
-// Copyright 2021 Paolo Galeone <nessuno@nerdz.eu>
+// Copyright 2022 Paolo Galeone <nessuno@nerdz.eu>
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,10 +13,7 @@
 // limitations under the License.
 
 use std::fmt;
-use std::fs::File;
-use std::io;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
 use std::string::String;
 use std::vec::Vec;
 
@@ -24,6 +21,12 @@ use crate::config::DockerConfig;
 use crate::services::service::{Dump, Service};
 
 use which::which;
+
+use async_trait::async_trait;
+use tokio::{fs::File, io};
+
+use std::process::Stdio;
+use tokio::process::Command;
 
 #[derive(Clone)]
 pub struct Docker {
@@ -50,7 +53,7 @@ impl fmt::Display for Error {
 }
 
 impl Docker {
-    pub fn new(config: DockerConfig, name: &str) -> Result<Docker, Error> {
+    pub async fn new(config: DockerConfig, name: &str) -> Result<Docker, Error> {
         let cmd = match which("docker") {
             Err(error) => return Err(Error::CommandNotFound(error)),
             Ok(cmd) => cmd,
@@ -60,7 +63,8 @@ impl Docker {
         let status = Command::new(&cmd)
             .args(&args)
             .stdout(Stdio::null())
-            .status();
+            .status()
+            .await;
         if status.is_err() {
             return Err(Error::RuntimeError(status.err().unwrap()));
         }
@@ -93,6 +97,7 @@ impl Docker {
     }
 }
 
+#[async_trait]
 impl Service for Docker {
     fn list(&self) -> Vec<PathBuf> {
         if self.dumped_to != PathBuf::new() {
@@ -101,7 +106,7 @@ impl Service for Docker {
         return vec![];
     }
 
-    fn dump(&mut self) -> Result<Dump, Box<dyn std::error::Error>> {
+    async fn dump(&mut self) -> Result<Dump, Box<dyn std::error::Error>> {
         let dest = std::env::current_dir()
             .unwrap()
             .join(PathBuf::from(format!("{}.dump", self.name)));
@@ -114,12 +119,13 @@ impl Service for Docker {
             .into());
         }
 
-        let dest_file = File::create(&dest)?;
+        let dest_file = File::create(&dest).await?;
 
         match Command::new(&self.cmd)
             .args(&self.args)
-            .stdout(Stdio::from(dest_file))
+            .stdout(Stdio::from(dest_file.try_into_std().unwrap()))
             .status()
+            .await
         {
             Ok(_) => {
                 self.dumped_to = dest.clone();

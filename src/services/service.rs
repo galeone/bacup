@@ -1,4 +1,4 @@
-// Copyright 2021 Paolo Galeone <nessuno@nerdz.eu>
+// Copyright 2022 Paolo Galeone <nessuno@nerdz.eu>
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,6 +15,8 @@
 use std::path::PathBuf;
 
 use dyn_clone::DynClone;
+
+use async_trait::async_trait;
 
 pub struct Dump {
     pub path: Option<PathBuf>,
@@ -34,7 +36,8 @@ impl Drop for Dump {
     }
 }
 
+#[async_trait]
 pub trait Service: DynClone {
-    fn dump(&mut self) -> Result<Dump, Box<dyn std::error::Error>>;
+    async fn dump(&mut self) -> Result<Dump, Box<dyn std::error::Error>>;
     fn list(&self) -> Vec<PathBuf>;
 }

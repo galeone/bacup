@@ -1,4 +1,4 @@
-// Copyright 2021 Paolo Galeone <nessuno@nerdz.eu>
+// Copyright 2022 Paolo Galeone <nessuno@nerdz.eu>
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,6 +15,8 @@
 use glob::glob;
 use std::fmt;
 use std::path::{Path, PathBuf};
+
+use async_trait::async_trait;
 
 use crate::services::service::{Dump, Service};
 
@@ -41,7 +43,7 @@ impl fmt::Display for Error {
 }
 
 impl Folder {
-    pub fn new(pattern: &str) -> Result<Folder, Error> {
+    pub async fn new(pattern: &str) -> Result<Folder, Error> {
         for token in &["*", "?", "["] {
             if pattern.contains(token) {
                 let base_path = pattern.split(token).next().unwrap();
@@ -75,12 +77,13 @@ impl Folder {
     }
 }
 
+#[async_trait]
 impl Service for Folder {
     fn list(&self) -> Vec<PathBuf> {
         self.paths.clone()
     }
 
-    fn dump(&mut self) -> Result<Dump, Box<dyn std::error::Error>> {
+    async fn dump(&mut self) -> Result<Dump, Box<dyn std::error::Error>> {
         self.paths = glob(&self.pattern)
             .unwrap()
             .map(|pb_ge| pb_ge.unwrap())
@@ -92,34 +95,34 @@ impl Service for Folder {
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
+    use std::env;
 
-    #[test]
-    fn test_new_relative() {
+    #[tokio::test]
+    async fn test_new_relative() {
         let relative = "relative";
-        assert!(Folder::new(relative).is_err());
+        assert!(Folder::new(relative).await.is_err());
         assert_eq!(
-            Folder::new(relative).err(),
+            Folder::new(relative).await.err(),
             Some(Error::IsNotAbsolute(PathBuf::from(relative)))
         );
     }
 
-    #[test]
-    fn test_new_absolute() {
-        let cwd = std::env::current_dir().unwrap();
-        assert!(Folder::new(cwd.to_str().unwrap()).is_ok());
+    #[tokio::test]
+    async fn test_new_absolute() {
+        let cwd = env::current_dir().unwrap();
+        assert!(Folder::new(cwd.to_str().unwrap()).await.is_ok());
     }
 
-    #[test]
-    fn test_dump_and_list_no_wildcard() {
-        let cwd = std::env::current_dir().unwrap();
-        let folder = Folder::new(cwd.to_str().unwrap());
+    #[tokio::test]
+    async fn test_dump_and_list_no_wildcard() {
+        let cwd = env::current_dir().unwrap();
+        let folder = Folder::new(cwd.to_str().unwrap()).await;
         assert!(folder.is_ok());
         let mut folder = folder.unwrap();
 
         // Dump -> evaluate the pattern
-        assert!(folder.dump().is_ok());
+        assert!(folder.dump().await.is_ok());
 
         let files = folder.list();
         assert!(files.len() > 0);
@@ -131,15 +134,15 @@ mod tests {
         assert!(files.contains(&cargo));
     }
 
-    #[test]
-    fn test_dump_and_list_wildcard() {
-        let cwd = std::env::current_dir().unwrap();
-        let folder = Folder::new(cwd.join("src").join("*").to_str().unwrap());
+    #[tokio::test]
+    async fn test_dump_and_list_wildcard() {
+        let cwd = env::current_dir().unwrap();
+        let folder = Folder::new(cwd.join("src").join("*").to_str().unwrap()).await;
         assert!(folder.is_ok());
         let mut folder = folder.unwrap();
 
         // Dump -> evaluate the pattern
-        assert!(folder.dump().is_ok());
+        assert!(folder.dump().await.is_ok());
 
         let files = folder.list();
         assert!(files.len() > 0);
@@ -148,13 +151,13 @@ mod tests {
         assert!(files.contains(&lib_path));
     }
 
-    #[test]
-    fn test_non_existing_abolute() {
-        let cwd = std::env::current_dir()
+    #[tokio::test]
+    async fn test_non_existing_abolute() {
+        let cwd = env::current_dir()
             .unwrap()
             .parent()
             .unwrap()
             .join("fakfakefakefake");
-        assert!(Folder::new(cwd.to_str().unwrap()).is_err());
+        assert!(Folder::new(cwd.to_str().unwrap()).await.is_err());
     }
 }
