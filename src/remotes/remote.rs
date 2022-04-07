@@ -1,4 +1,4 @@
-// Copyright 2021 Paolo Galeone <nessuno@nerdz.eu>
+// Copyright 2022 Paolo Galeone <nessuno@nerdz.eu>
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,15 +21,16 @@ use std::string::String;
 use chrono::DateTime;
 use chrono::Utc;
 
-use flate2::write::GzEncoder;
-use flate2::Compression;
-use std::io::prelude::*;
+use async_compression::tokio::write::GzipEncoder;
 
 use dyn_clone::DynClone;
 
 use crate::remotes::aws::Error as AWSError;
 
 use tempfile::NamedTempFile;
+
+use tokio::fs;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use log::info;
 
@@ -66,7 +67,7 @@ impl fmt::Display for Error {
 }
 
 #[async_trait]
-pub trait Remote: DynClone {
+pub trait Remote: DynClone + Send {
     async fn upload_file(&self, path: &Path, remote_path: &Path) -> Result<(), Error>;
     async fn upload_folder(&self, paths: &[PathBuf], remote_path: &Path) -> Result<(), Error>;
     async fn upload_file_compressed(&self, path: &Path, remote_path: &Path) -> Result<(), Error>;
@@ -76,43 +77,52 @@ pub trait Remote: DynClone {
 
     fn name(&self) -> String;
 
-    fn compress_folder(&self, path: &Path) -> Result<NamedTempFile, Error> {
+    async fn compress_folder(&self, path: &Path) -> Result<NamedTempFile, Error>
+    where
+        Self: Sized,
+    {
         info!("Compressing folder {}...", path.display());
         let archive_path = NamedTempFile::new()?;
 
-        let archive = std::fs::File::create(&archive_path)?;
-        let mut encoder = GzEncoder::new(archive, Compression::default());
-        {
-            let mut tar = tar::Builder::new(&mut encoder);
-            tar.append_dir_all(".", path)?;
-        }
-        let enc_res = encoder.finish();
-        if enc_res.is_err() {
-            return Err(Error::CompressionError);
-        }
+        let file = fs::File::create(&archive_path).await?;
+        let encoder = GzipEncoder::new(file);
+        info!("Encoder ceated for file");
+
+        let mut builder = tokio_tar::Builder::new(encoder);
+        info!("Builder created");
+        builder
+            .append_dir_all(path.file_name().unwrap(), path)
+            .await?;
+        info!("append dir all completed");
+
+        let mut encoder = builder.into_inner().await?;
+        info!("encoder into inner done");
+        encoder.flush().await?;
+        info!("flush done");
+        encoder.shutdown().await?;
         info!("Compression of folder {} done.", path.display());
         Ok(archive_path)
     }
 
-    fn compress_file(&self, path: &Path) -> Result<Vec<u8>, Error> {
+    async fn compress_file(&self, path: &Path) -> Result<Vec<u8>, Error>
+    where
+        Self: Sized,
+    {
         info!("Compressing file {}...", path.display());
         let mut content: Vec<u8> = vec![];
-        let mut file = match std::fs::File::open(path) {
+        let mut file = match fs::File::open(path).await {
             Ok(file) => file,
             Err(error) => return Err(Error::LocalError(error)),
         };
 
-        file.read_to_end(&mut content)?;
+        file.read_to_end(&mut content).await?;
 
-        let mut e = GzEncoder::new(Vec::new(), Compression::default());
-        e.write_all(&content)?;
+        let mut e = GzipEncoder::new(Vec::new());
+        e.write_all(&content).await?;
+        e.shutdown().await?;
 
-        let ret = match e.finish() {
-            Ok(bytes) => Ok(bytes),
-            Err(_) => Err(Error::CompressionError),
-        };
         info!("Compression of file {} done.", path.display());
-        ret
+        Ok(content)
     }
 
     fn remote_archive_path(&self, remote_path: &Path) -> PathBuf {

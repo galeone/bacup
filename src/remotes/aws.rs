@@ -1,4 +1,4 @@
-// Copyright 2021 Paolo Galeone <nessuno@nerdz.eu>
+// Copyright 2022 Paolo Galeone <nessuno@nerdz.eu>
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,13 +13,16 @@
 // limitations under the License.
 
 pub use aws_sdk_s3::Error;
-use aws_sdk_s3::{Client, Region};
+use aws_sdk_s3::{types::ByteStream, Client, Region};
 use aws_types::credentials::SharedCredentialsProvider;
 
 use crate::config::AwsConfig;
 use crate::remotes::remote;
 
 use std::path::{Path, PathBuf};
+
+use tokio::fs::File;
+use tokio::io::AsyncReadExt;
 
 use async_trait::async_trait;
 
@@ -58,7 +61,7 @@ impl Bucket {
             .put_object()
             .bucket(&self.bucket_name)
             .key(remote_path.trim_start_matches('/'))
-            .body(content.into())
+            .body(ByteStream::from(content))
             .send()
             .await?;
         Ok(())
@@ -90,8 +93,8 @@ impl AwsBucket {
             ))
             .load()
             .await;
-        let client = Client::new(&config);
 
+        let client = Client::new(&config);
         let bucket = Bucket {
             client,
             bucket_name: bucket_name.to_owned(),
@@ -123,9 +126,6 @@ impl remote::Remote for AwsBucket {
     }
 
     async fn upload_file(&self, path: &Path, remote_path: &Path) -> Result<(), remote::Error> {
-        use tokio::fs::File;
-        use tokio::io::AsyncReadExt;
-
         let mut content: Vec<u8> = vec![];
         let mut file = File::open(path).await?;
         file.read_to_end(&mut content).await?;
@@ -140,7 +140,7 @@ impl remote::Remote for AwsBucket {
         path: &Path,
         remote_path: &Path,
     ) -> Result<(), remote::Error> {
-        let compressed_bytes = self.compress_file(path)?;
+        let compressed_bytes = self.compress_file(path).await?;
         let remote_path = self.remote_compressed_file_path(remote_path);
         self.bucket
             .put_object(remote_path.to_str().unwrap(), compressed_bytes)
@@ -195,7 +195,7 @@ impl remote::Remote for AwsBucket {
         }
 
         let remote_path = self.remote_archive_path(remote_path);
-        let compressed_folder = self.compress_folder(path)?;
+        let compressed_folder = self.compress_folder(path).await?;
         self.upload_file(compressed_folder.path(), &remote_path)
             .await?;
         Ok(())

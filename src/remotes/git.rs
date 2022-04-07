@@ -1,4 +1,4 @@
-// Copyright 2021 Paolo Galeone <nessuno@nerdz.eu>
+// Copyright 2022 Paolo Galeone <nessuno@nerdz.eu>
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,6 +15,10 @@
 use crate::config::{GitConfig, SshConfig};
 use crate::remotes::remote;
 use crate::remotes::ssh;
+
+use tokio::fs;
+use tokio::fs::File;
+use tokio::io::AsyncWriteExt;
 
 use std::io;
 
@@ -102,7 +106,7 @@ pub struct Git {
 }
 
 impl Git {
-    pub fn new(config: GitConfig, remote_name: &str) -> Result<Git, Error> {
+    pub async fn new(config: GitConfig, remote_name: &str) -> Result<Git, Error> {
         // Instantiate an ssh remote that will check for us the validity of
         // all the ssh parameters
         let ssh_config = SshConfig {
@@ -111,7 +115,7 @@ impl Git {
             private_key: config.private_key.clone(),
             username: config.username.clone(),
         };
-        ssh::Ssh::new(ssh_config, remote_name)?;
+        ssh::Ssh::new(ssh_config, remote_name).await?;
 
         let git_cmd = which("git")?;
         Ok(Git {
@@ -177,8 +181,6 @@ impl remote::Remote for Git {
     }
 
     async fn upload_file(&self, path: &Path, remote_path: &Path) -> Result<(), remote::Error> {
-        use tokio::fs;
-
         let repo = self.clone_repository()?;
 
         // cp file <repo_location>/[<subdir>]
@@ -248,12 +250,8 @@ impl remote::Remote for Git {
         path: &Path,
         remote_path: &Path,
     ) -> Result<(), remote::Error> {
-        use tokio::fs;
-        use tokio::fs::File;
-        use tokio::io::AsyncWriteExt;
-
         // Read and compress
-        let compressed_bytes = self.compress_file(path)?;
+        let compressed_bytes = self.compress_file(path).await?;
         let remote_path = self.remote_compressed_file_path(remote_path);
 
         let mut buffer = File::create(&remote_path).await?;
@@ -274,7 +272,6 @@ impl remote::Remote for Git {
         paths: &[PathBuf],
         remote_path: &Path,
     ) -> Result<(), remote::Error> {
-        use tokio::fs;
         let repo = self.clone_repository()?;
 
         // cp file <repo_location>/[<subdir>]
@@ -360,7 +357,7 @@ impl remote::Remote for Git {
         }
 
         let remote_path = self.remote_archive_path(remote_path);
-        let compressed_folder = self.compress_folder(path)?;
+        let compressed_folder = self.compress_folder(path).await?;
 
         self.upload_file(compressed_folder.path(), &remote_path)
             .await

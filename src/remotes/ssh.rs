@@ -1,4 +1,4 @@
-// Copyright 2021 Paolo Galeone <nessuno@nerdz.eu>
+// Copyright 2022 Paolo Galeone <nessuno@nerdz.eu>
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -26,6 +26,10 @@ use std::fmt;
 use std::string::String;
 
 use log::warn;
+
+use tokio::fs;
+use tokio::fs::File;
+use tokio::io::AsyncReadExt;
 
 use async_trait::async_trait;
 
@@ -73,9 +77,7 @@ pub struct Ssh {
 }
 
 impl Ssh {
-    pub fn new(config: SshConfig, remote_name: &str) -> Result<Ssh, Error> {
-        use std::fs;
-
+    pub async fn new(config: SshConfig, remote_name: &str) -> Result<Ssh, Error> {
         let ssh_cmd = which("ssh")?;
 
         let private_key = shellexpand::tilde(&config.private_key).to_string();
@@ -86,7 +88,7 @@ impl Ssh {
                 private_key.display(),
             )));
         }
-        let private_key_file = fs::read_to_string(&private_key)?;
+        let private_key_file = fs::read_to_string(&private_key).await?;
 
         if private_key_file.contains("Proc-Type") && private_key_file.contains("ENCRYPTED") {
             return Err(Error::InvalidPrivateKey(format!(
@@ -240,9 +242,6 @@ impl remote::Remote for Ssh {
     }
 
     async fn upload_file(&self, path: &Path, remote_path: &Path) -> Result<(), remote::Error> {
-        use tokio::fs::File;
-        use tokio::io::AsyncReadExt;
-
         // Read file
         let mut content: Vec<u8> = vec![];
         let mut file = File::open(path).await?;
@@ -298,7 +297,7 @@ impl remote::Remote for Ssh {
         remote_path: &Path,
     ) -> Result<(), remote::Error> {
         // Read and compress
-        let compressed_bytes = self.compress_file(path)?;
+        let compressed_bytes = self.compress_file(path).await?;
         let remote_path = self.remote_compressed_file_path(remote_path);
 
         // cat file | ssh -Pxxx user@host "cat > file"
@@ -376,7 +375,7 @@ impl remote::Remote for Ssh {
         }
 
         let remote_path = self.remote_archive_path(remote_path);
-        let compressed_folder = self.compress_folder(path)?;
+        let compressed_folder = self.compress_folder(path).await?;
 
         self.upload_file(compressed_folder.path(), &remote_path)
             .await

@@ -1,4 +1,4 @@
-// Copyright 2021 Paolo Galeone <nessuno@nerdz.eu>
+// Copyright 2022 Paolo Galeone <nessuno@nerdz.eu>
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -149,7 +149,7 @@ impl remote::Remote for Localhost {
         use tokio::fs;
         use tokio::io::AsyncWriteExt;
 
-        let compressed_bytes = self.compress_file(path)?;
+        let compressed_bytes = self.compress_file(path).await?;
         let remote_path = if remote_path.is_absolute() {
             remote_path.strip_prefix("/").unwrap()
         } else {
@@ -187,15 +187,16 @@ impl remote::Remote for Localhost {
         }
 
         // Strip local prefix from remote paths and copy
-        let remote_prefix: PathBuf;
         // Need to do this because if we join /some/location with /
         // somehow it becomes / and not /some/location/
         let remote_path_str = remote_path.to_str().unwrap();
-        if remote_path_str.starts_with('/') {
-            remote_prefix = PathBuf::from(remote_path_str.trim_start_matches('/'));
+
+        let remote_prefix = if remote_path_str.starts_with('/') {
+            PathBuf::from(remote_path_str.trim_start_matches('/'))
         } else {
-            remote_prefix = PathBuf::from(remote_path);
-        }
+            PathBuf::from(remote_path)
+        };
+
         for path in paths.iter() {
             if path.is_file() {
                 let dest = self
@@ -221,7 +222,7 @@ impl remote::Remote for Localhost {
             return Err(remote::Error::NotADirectory);
         }
         let remote_path = self.remote_archive_path(remote_path);
-        let compressed_folder = self.compress_folder(path)?;
+        let compressed_folder = self.compress_folder(path).await?;
         self.upload_file(compressed_folder.path(), &remote_path)
             .await?;
         Ok(())
@@ -285,7 +286,15 @@ mod tests {
         };
         let localhost = Localhost::new(config, "test_service").unwrap();
 
-        let mut folder = Folder::new(std::env::current_dir().unwrap().to_str().unwrap()).unwrap();
+        let mut folder = Folder::new(
+            std::env::current_dir()
+                .unwrap()
+                .join("src")
+                .to_str()
+                .unwrap(),
+        )
+        .await
+        .unwrap();
         #[allow(unused_must_use)]
         {
             // Call dump to populate the list (e.g. call ls path/**/*)
@@ -299,14 +308,9 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(tmp_dir
-            .path()
-            .join("src")
-            .join("remotes")
-            .join("localhost.rs")
-            .exists());
+        assert!(tmp_dir.path().join("remotes").join("localhost.rs").exists());
 
-        assert!(tmp_dir.path().join("README.md").exists());
+        assert!(tmp_dir.path().join("lib.rs").exists());
     }
 
     #[tokio::test]
