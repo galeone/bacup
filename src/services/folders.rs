@@ -22,7 +22,6 @@ use crate::services::service::{Dump, Service};
 
 #[derive(Clone)]
 pub struct Folder {
-    paths: Vec<PathBuf>,
     pattern: String,
 }
 
@@ -59,7 +58,6 @@ impl Folder {
 
                 return Ok(Folder {
                     pattern: String::from(pattern),
-                    paths: vec![],
                 });
             }
         }
@@ -71,7 +69,6 @@ impl Folder {
             return Err(Error::DoesNotExist(PathBuf::from(path)));
         }
         return Ok(Folder {
-            paths: vec![],
             pattern: String::from(path.join("**").join("*").to_str().unwrap()),
         });
     }
@@ -79,16 +76,14 @@ impl Folder {
 
 #[async_trait]
 impl Service for Folder {
-    fn list(&self) -> Vec<PathBuf> {
-        self.paths.clone()
-    }
-
-    async fn dump(&mut self) -> Result<Dump, Box<dyn std::error::Error>> {
-        self.paths = glob(&self.pattern)
+    async fn list(&self) -> Vec<PathBuf> {
+        glob(&self.pattern)
             .unwrap()
             .map(|pb_ge| pb_ge.unwrap())
-            .collect::<Vec<PathBuf>>();
+            .collect::<Vec<PathBuf>>()
+    }
 
+    async fn dump(&self) -> Result<Dump, Box<dyn std::error::Error>> {
         Ok(Dump { path: None })
     }
 }
@@ -119,12 +114,12 @@ mod tests {
         let cwd = env::current_dir().unwrap();
         let folder = Folder::new(cwd.to_str().unwrap()).await;
         assert!(folder.is_ok());
-        let mut folder = folder.unwrap();
+        let folder = folder.unwrap();
 
         // Dump -> evaluate the pattern
         assert!(folder.dump().await.is_ok());
 
-        let files = folder.list();
+        let files = folder.list().await;
         assert!(files.len() > 0);
 
         let git_info = cwd.join(".git").join("info");
@@ -139,12 +134,12 @@ mod tests {
         let cwd = env::current_dir().unwrap();
         let folder = Folder::new(cwd.join("src").join("*").to_str().unwrap()).await;
         assert!(folder.is_ok());
-        let mut folder = folder.unwrap();
+        let folder = folder.unwrap();
 
         // Dump -> evaluate the pattern
         assert!(folder.dump().await.is_ok());
 
-        let files = folder.list();
+        let files = folder.list().await;
         assert!(files.len() > 0);
 
         let lib_path = cwd.join("src").join("lib.rs");

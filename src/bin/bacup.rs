@@ -1,4 +1,4 @@
-// Copyright 2021 Paolo Galeone <nessuno@nerdz.eu>
+// Copyright 2022 Paolo Galeone <nessuno@nerdz.eu>
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
 use std::collections::HashMap;
 use std::env;
 use std::path::Path;
+
 use std::string::String;
 
 use bacup::backup::Backup;
@@ -35,9 +36,7 @@ use bacup::services::service::Service;
 use log::*;
 use structopt::StructOpt;
 
-use job_scheduler::JobScheduler;
-
-use std::time::Duration;
+use tokio_cron_scheduler::JobScheduler;
 
 #[derive(StructOpt, Debug)]
 #[structopt()]
@@ -73,7 +72,7 @@ async fn main() -> Result<(), i32> {
         return Err(-1);
     }
 
-    let config = match Config::new(path) {
+    let config = match Config::new(path).await {
         Ok(config) => config,
         Err(error) => {
             error!("Config error: {}", error);
@@ -81,7 +80,7 @@ async fn main() -> Result<(), i32> {
         }
     };
 
-    let mut remotes: HashMap<String, Box<dyn Remote>> = HashMap::new();
+    let mut remotes: HashMap<String, Box<dyn Remote + Send + Sync>> = HashMap::new();
 
     match config.aws {
         Some(aws) => {
@@ -101,7 +100,7 @@ async fn main() -> Result<(), i32> {
             for (hostname, config) in host {
                 remotes.insert(
                     format!("ssh.{}", hostname),
-                    Box::new(Ssh::new(config, &hostname).unwrap()),
+                    Box::new(Ssh::new(config, &hostname).await.unwrap()),
                 );
                 info!("Remote ssh.{} configured", hostname);
             }
@@ -127,7 +126,7 @@ async fn main() -> Result<(), i32> {
             for (name, config) in host {
                 remotes.insert(
                     format!("git.{}", name),
-                    Box::new(Git::new(config, &name).unwrap()),
+                    Box::new(Git::new(config, &name).await.unwrap()),
                 );
                 info!("Remote git.{} configured", name);
             }
@@ -135,12 +134,12 @@ async fn main() -> Result<(), i32> {
         None => warn!("No Git remotes configured."),
     }
 
-    let mut services: HashMap<String, Box<dyn Service>> = HashMap::new();
+    let mut services: HashMap<String, Box<dyn Service + Send + Sync>> = HashMap::new();
     match config.folders {
         Some(folders) => {
             for (location_name, folder) in folders {
                 let key = format!("folders.{}", location_name);
-                services.insert(key, Box::new(Folder::new(&folder.pattern).unwrap()));
+                services.insert(key, Box::new(Folder::new(&folder.pattern).await.unwrap()));
             }
         }
         None => warn!("No folders to backup."),
@@ -151,7 +150,11 @@ async fn main() -> Result<(), i32> {
                 let key = format!("postgres.{}", service_name);
                 services.insert(
                     key,
-                    Box::new(PostgreSql::new(instance_config, &service_name).unwrap()),
+                    Box::new(
+                        PostgreSql::new(instance_config, &service_name)
+                            .await
+                            .unwrap(),
+                    ),
                 );
             }
         }
@@ -163,14 +166,14 @@ async fn main() -> Result<(), i32> {
                 let key = format!("docker.{}", service_name);
                 services.insert(
                     key,
-                    Box::new(Docker::new(instance_config, &service_name).unwrap()),
+                    Box::new(Docker::new(instance_config, &service_name).await.unwrap()),
                 );
             }
         }
         None => warn!("No Docker to backup."),
     }
 
-    let mut backup: HashMap<String, Backup> = HashMap::new();
+    let mut backup: HashMap<String, Box<Backup>> = HashMap::new();
     for (backup_name, config) in config.backup {
         if !services.contains_key(&config.what) {
             error!(
@@ -194,35 +197,52 @@ async fn main() -> Result<(), i32> {
 
         backup.insert(
             backup_name.clone(),
-            Backup::new(
-                &backup_name,
-                dyn_clone::clone_box(&*remotes[&config.r#where]),
-                dyn_clone::clone_box(&*services[&config.what]),
-                &config,
-            )
-            .unwrap(),
+            Box::new(
+                Backup::new(
+                    &backup_name,
+                    dyn_clone::clone_box(&*remotes[&config.r#where]),
+                    dyn_clone::clone_box(&*services[&config.what]),
+                    &config,
+                )
+                .await
+                .unwrap(),
+            ),
         );
         info!("Backup {} -> {} configured", config.what, config.r#where);
     }
 
-    let mut scheduler = JobScheduler::new();
+    let mut scheduler = JobScheduler::new().unwrap();
+    // scheduler.shutdown_on_ctrl_c();
 
     for (name, job) in backup {
+        let job = Box::leak(job);
         let upcoming = job.schedule.upcoming(chrono::Utc).take(1).next().unwrap();
         let schedule = job.schedule.clone();
-        let res = job.schedule(&mut scheduler, schedule);
+        let res = job.schedule(&mut scheduler, schedule).await;
 
         match res {
             Err(error) => {
-                error!("Error during scheduling: {}", error);
+                error!("Error during scheduling: {:?}", error);
                 return Err(-1);
             }
-            Ok(()) => info!("Successfully scheduled {}. Next run: {}", name, upcoming),
+            Ok(uuid) => info!(
+                "Successfully scheduled {} ({}). Next run: {}",
+                name, uuid, upcoming
+            ),
         }
     }
 
+    if scheduler.start().is_err() {
+        error!("Unable to start the scheduler");
+        return Err(-1);
+    }
+    use tokio::time::Duration;
     loop {
-        scheduler.tick();
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        /*if let Err(e) = scheduler.tick() {
+            error!("Scheduler tick error: {:?}", e);
+            return Err(-1);
+        }
+        */
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }

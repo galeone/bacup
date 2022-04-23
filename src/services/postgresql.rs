@@ -18,7 +18,7 @@ use tokio::process::Command;
 use async_trait::async_trait;
 use which::which;
 
-use tokio::io;
+use tokio::{fs::metadata, io};
 
 use crate::config::PostgreSqlConfig;
 use crate::services::service::{Dump, Service};
@@ -147,14 +147,18 @@ impl PostgreSql {
 
 #[async_trait]
 impl Service for PostgreSql {
-    fn list(&self) -> Vec<PathBuf> {
-        if self.dumped_to != PathBuf::new() {
-            return vec![self.dumped_to.clone()];
+    async fn list(&self) -> Vec<PathBuf> {
+        let dest = std::env::current_dir()
+            .unwrap()
+            .join(PathBuf::from(format!("{}-dump.sql", self.name)));
+
+        if metadata(&dest).await.is_ok() {
+            return vec![dest];
         }
         return vec![];
     }
 
-    async fn dump(&mut self) -> Result<Dump, Box<dyn std::error::Error>> {
+    async fn dump(&self) -> Result<Dump, Box<dyn std::error::Error>> {
         let dest = std::env::current_dir()
             .unwrap()
             .join(PathBuf::from(format!("{}-dump.sql", self.name)));
@@ -176,10 +180,7 @@ impl Service for PostgreSql {
             .status()
             .await
         {
-            Ok(_) => {
-                self.dumped_to = dest.clone();
-                Ok(Dump { path: Some(dest) })
-            }
+            Ok(_) => Ok(Dump { path: Some(dest) }),
             Err(error) => Err(Error::RuntimeError(error).into()),
         }
     }
@@ -274,7 +275,7 @@ mod tests {
             port: Some(PORT),
         };
 
-        let mut db = PostgreSql::new(config, NAME).await.unwrap();
+        let db = PostgreSql::new(config, NAME).await.unwrap();
         assert!(db.dump().await.is_ok());
     }
 }

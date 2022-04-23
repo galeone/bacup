@@ -286,7 +286,7 @@ mod tests {
         };
         let localhost = Localhost::new(config, "test_service").unwrap();
 
-        let mut folder = Folder::new(
+        let folder = Folder::new(
             std::env::current_dir()
                 .unwrap()
                 .join("src")
@@ -301,7 +301,7 @@ mod tests {
             folder.dump();
         }
 
-        let files = folder.list();
+        let files = folder.list().await;
 
         localhost
             .upload_folder(&files, &PathBuf::from("/"))

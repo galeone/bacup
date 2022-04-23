@@ -1,6 +1,6 @@
 [package]
 name = "bacup"
-version = "0.1.7"
+version = "0.1.8"
 description = "An easy-to-use backup tool designed for servers."
 readme = "README.md"
 authors = ["Paolo Galeone <me@pgaleone.eu>"]
@@ -14,27 +14,28 @@ categories = ["command-line-utilities"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-async-trait = "0.1.52"
+async-trait = "0.1.53"
 chrono = "0.4.19"
-cron = "0.6.0" # 0.6 for begin compatibile with the crono used in job_scheduler
-dyn-clone = "1.0.4"
-flate2 = "1.0.22"
-futures = "0.3.19"
+dyn-clone = "1.0.5"
+futures = "0.3.21"
 glob = "0.3.0"
-job_scheduler = "1.2.1"
-log = "0.4.14"
-regex = "1.5.4"
+log = "0.4.16"
+regex = "1.5.5"
 scopeguard = "1.1.0"
 serde = { version = "1.0.136", features = ["derive"] }
 shellexpand = "2.1.0"
 stderrlog = "0.5.1"
 structopt = "0.3.26"
-tar = "0.4.38"
 tempfile = "3.3.0"
-tokio = { version = "1.16.1", features = ["full"] }
-toml = "0.5.8"
+tokio = { version = "1.17.0", features = ["full"] }
+toml = "0.5.9"
 url = { version = "2.2.2", features = ["serde"] }
-which = "4.2.4"
-aws-config = "0.6.0"
-aws-types = { version="0.6.0", features = ["hardcoded-credentials"] }
-aws-sdk-s3 = "0.6.0"
+which = "4.2.5"
+aws-config = "0.10.1"
+aws-types = { version = "0.10.1", features = ["hardcoded-credentials"] }
+aws-sdk-s3 = "0.10.1"
+async-compression = { version = "0.3.12", default-features = false, features = ["tokio", "gzip"] }
+tokio-tar = "0.3.0"
+tokio-cron-scheduler = { version = "0.6.8" }
+cron = "0.11.0"
+uuid = { version = "0.8", features = ["v4"] }

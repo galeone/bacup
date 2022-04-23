@@ -67,7 +67,7 @@ impl fmt::Display for Error {
 }
 
 #[async_trait]
-pub trait Remote: DynClone + Send {
+pub trait Remote: DynClone + Send + Sync {
     async fn upload_file(&self, path: &Path, remote_path: &Path) -> Result<(), Error>;
     async fn upload_folder(&self, paths: &[PathBuf], remote_path: &Path) -> Result<(), Error>;
     async fn upload_file_compressed(&self, path: &Path, remote_path: &Path) -> Result<(), Error>;
@@ -81,24 +81,19 @@ pub trait Remote: DynClone + Send {
     where
         Self: Sized,
     {
-        info!("Compressing folder {}...", path.display());
+        info!("Compressing folder {}", path.display());
         let archive_path = NamedTempFile::new()?;
 
         let file = fs::File::create(&archive_path).await?;
         let encoder = GzipEncoder::new(file);
-        info!("Encoder ceated for file");
 
         let mut builder = tokio_tar::Builder::new(encoder);
-        info!("Builder created");
         builder
             .append_dir_all(path.file_name().unwrap(), path)
             .await?;
-        info!("append dir all completed");
 
         let mut encoder = builder.into_inner().await?;
-        info!("encoder into inner done");
         encoder.flush().await?;
-        info!("flush done");
         encoder.shutdown().await?;
         info!("Compression of folder {} done.", path.display());
         Ok(archive_path)

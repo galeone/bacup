@@ -38,6 +38,6 @@ impl Drop for Dump {
 
 #[async_trait]
 pub trait Service: DynClone {
-    async fn dump(&mut self) -> Result<Dump, Box<dyn std::error::Error>>;
-    fn list(&self) -> Vec<PathBuf>;
+    async fn dump(&self) -> Result<Dump, Box<dyn std::error::Error>>;
+    async fn list(&self) -> Vec<PathBuf>;
 }

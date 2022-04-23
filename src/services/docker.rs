@@ -23,7 +23,7 @@ use crate::services::service::{Dump, Service};
 use which::which;
 
 use async_trait::async_trait;
-use tokio::{fs::File, io};
+use tokio::{fs::metadata, fs::File, io};
 
 use std::process::Stdio;
 use tokio::process::Command;
@@ -33,7 +33,6 @@ pub struct Docker {
     pub name: String,
     pub cmd: PathBuf,
     pub args: Vec<String>,
-    pub dumped_to: PathBuf,
 }
 
 #[derive(Debug)]
@@ -91,7 +90,6 @@ impl Docker {
         Ok(Docker {
             name: String::from(name),
             args,
-            dumped_to: PathBuf::new(),
             cmd,
         })
     }
@@ -99,14 +97,18 @@ impl Docker {
 
 #[async_trait]
 impl Service for Docker {
-    fn list(&self) -> Vec<PathBuf> {
-        if self.dumped_to != PathBuf::new() {
-            return vec![self.dumped_to.clone()];
+    async fn list(&self) -> Vec<PathBuf> {
+        let dest = std::env::current_dir()
+            .unwrap()
+            .join(PathBuf::from(format!("{}.dump", self.name)));
+
+        if metadata(&dest).await.is_ok() {
+            return vec![dest];
         }
         return vec![];
     }
 
-    async fn dump(&mut self) -> Result<Dump, Box<dyn std::error::Error>> {
+    async fn dump(&self) -> Result<Dump, Box<dyn std::error::Error>> {
         let dest = std::env::current_dir()
             .unwrap()
             .join(PathBuf::from(format!("{}.dump", self.name)));
@@ -127,10 +129,7 @@ impl Service for Docker {
             .status()
             .await
         {
-            Ok(_) => {
-                self.dumped_to = dest.clone();
-                Ok(Dump { path: Some(dest) })
-            }
+            Ok(_) => Ok(Dump { path: Some(dest) }),
             Err(error) => Err(Error::RuntimeError(error).into()),
         }
     }
