@@ -15,6 +15,7 @@
 use std::collections::HashMap;
 use std::env;
 use std::path::Path;
+use std::sync::Arc;
 
 use std::string::String;
 
@@ -173,7 +174,7 @@ async fn main() -> Result<(), i32> {
         None => warn!("No Docker to backup."),
     }
 
-    let mut backup: HashMap<String, Box<Backup>> = HashMap::new();
+    let mut backup: HashMap<String, Arc<Backup>> = HashMap::new();
     for (backup_name, config) in config.backup {
         if !services.contains_key(&config.what) {
             error!(
@@ -197,7 +198,7 @@ async fn main() -> Result<(), i32> {
 
         backup.insert(
             backup_name.clone(),
-            Box::new(
+            Arc::new(
                 Backup::new(
                     &backup_name,
                     dyn_clone::clone_box(&*remotes[&config.r#where]),
@@ -215,7 +216,6 @@ async fn main() -> Result<(), i32> {
     // scheduler.shutdown_on_ctrl_c();
 
     for (name, job) in backup {
-        let job = Box::leak(job);
         let upcoming = job.schedule.upcoming(chrono::Utc).take(1).next().unwrap();
         let schedule = job.schedule.clone();
         let res = job.schedule(&mut scheduler, schedule).await;
