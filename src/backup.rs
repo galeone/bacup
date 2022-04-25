@@ -22,6 +22,7 @@ use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::Arc;
 use tokio_cron_scheduler::JobSchedulerError;
 use tokio_cron_scheduler::{Job, JobScheduler};
 
@@ -298,19 +299,22 @@ impl<'a> Backup {
     }
 
     pub async fn schedule(
-        &'static self,
+        self: Arc<Self>,
         scheduler: &mut JobScheduler,
         schedule: cron::Schedule,
     ) -> Result<Uuid, JobSchedulerError> {
+
         scheduler.add(
             Job::new_async(schedule.to_string().as_str(), move |_uuid, _js| {
+                let inst = self.clone();
                 Box::pin(async move {
-                    let remote = &self.r#where;
-                    let service = &self.what;
-                    let compress = self.compress;
-                    let name = self.name.clone();
-                    let remote_prefix = self.remote_path.clone();
-                    let keep_last = self.keep_last;
+                    let inst = inst.as_ref();
+                    let remote = &inst.r#where;
+                    let service = &inst.what;
+                    let compress = inst.compress;
+                    let name = inst.name.clone();
+                    let remote_prefix = inst.remote_path.clone();
+                    let keep_last = inst.keep_last;
 
                     // First call dump, to trigger the dump service if present
                     info!("[{}] Calling dump...", &name);
@@ -476,7 +480,7 @@ impl<'a> Backup {
                     info!(
                         "[{}] Next run: {}",
                         name,
-                        self.schedule.upcoming(chrono::Utc).take(1).next().unwrap()
+                        inst.schedule.upcoming(chrono::Utc).take(1).next().unwrap()
                     );
                 })
             })
