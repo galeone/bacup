@@ -114,10 +114,11 @@ pub trait Remote: DynClone + Send + Sync {
 
         let mut e = GzipEncoder::new(Vec::new());
         e.write_all(&content).await?;
+        e.flush().await?;
         e.shutdown().await?;
 
         info!("Compression of file {} done.", path.display());
-        Ok(content)
+        Ok(e.into_inner())
     }
 
     fn remote_archive_path(&self, remote_path: &Path) -> PathBuf {
