@@ -303,7 +303,6 @@ impl<'a> Backup {
         scheduler: &mut JobScheduler,
         schedule: cron::Schedule,
     ) -> Result<Uuid, JobSchedulerError> {
-
         scheduler.add(
             Job::new_async(schedule.to_string().as_str(), move |_uuid, _js| {
                 let inst = self.clone();
