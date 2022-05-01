@@ -18,6 +18,8 @@ use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 
+use tokio::fs;
+
 use crate::services::service::{Dump, Service};
 
 #[derive(Clone)]
@@ -56,6 +58,15 @@ impl Folder {
                     return Err(Error::DoesNotExist(PathBuf::from(base_path)));
                 }
 
+                return Ok(Folder {
+                    pattern: String::from(pattern),
+                });
+            }
+        }
+
+        // Single file backup support - not a pattern nor a folder.
+        if let Ok(meta) = fs::metadata(pattern).await {
+            if meta.is_file() {
                 return Ok(Folder {
                     pattern: String::from(pattern),
                 });
@@ -104,13 +115,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_new_absolute() {
+    async fn test_new_absolute_folder() {
         let cwd = env::current_dir().unwrap();
         assert!(Folder::new(cwd.to_str().unwrap()).await.is_ok());
     }
 
     #[tokio::test]
-    async fn test_dump_and_list_no_wildcard() {
+    async fn test_new_absolute_file() {
+        let cwd = env::current_dir().unwrap().join("Cargo.toml");
+        assert!(Folder::new(cwd.to_str().unwrap()).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_dump_and_list_no_wildcard_folder() {
         let cwd = env::current_dir().unwrap();
         let folder = Folder::new(cwd.to_str().unwrap()).await;
         assert!(folder.is_ok());
@@ -127,6 +144,22 @@ mod tests {
 
         let cargo = cwd.join("LICENSE");
         assert!(files.contains(&cargo));
+    }
+
+    #[tokio::test]
+    async fn test_dump_and_list_no_wildcard_single_file() {
+        let cwd = env::current_dir().unwrap();
+        let file = cwd.join("Cargo.toml");
+
+        let folder = Folder::new(file.to_str().unwrap()).await;
+        assert!(folder.is_ok());
+        let folder = folder.unwrap();
+
+        // Dump -> evaluate the pattern
+        assert!(folder.dump().await.is_ok());
+
+        let files = folder.list().await;
+        assert!(files.len() == 1);
     }
 
     #[tokio::test]

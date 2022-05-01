@@ -337,7 +337,7 @@ impl<'a> Backup {
                     // If the local_files list contains a single file, the upload should be in the form:
                     // /remote/prefix/filename
                     // even if the local file is in /local/path/in/folder/filename
-                    let mut single_file = local_files.len() <= 1;
+                    let mut single_file = local_files.len() == 1;
 
                     // If the local_files list is a list of multiple files, we suppose these files all
                     // share the same root. To find the root we can simply find the shortest string.
