@@ -484,7 +484,7 @@ impl<'a> Backup {
                 })
             })
             .unwrap(),
-        )
+        ).await
     }
 }
 
