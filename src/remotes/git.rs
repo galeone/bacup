@@ -139,7 +139,7 @@ impl Git {
         );
 
         let status = Command::new(&self.git_cmd)
-            .args(&["clone", &url, "--depth", "1"])
+            .args(["clone", &url, "--depth", "1"])
             .status()?;
         if !status.success() {
             return Err(Error::RuntimeError(io::Error::new(
@@ -201,17 +201,17 @@ impl remote::Remote for Git {
 
         // git switch -c branch (ignore failures - we might be in the branch already)
         Command::new(&self.git_cmd)
-            .args(&["switch", "-c", &self.config.branch])
+            .args(["switch", "-c", &self.config.branch])
             .status()?;
 
         // git pull origin branch (ignore failures)
         Command::new(&self.git_cmd)
-            .args(&["pull", "origin", &self.config.branch])
+            .args(["pull", "origin", &self.config.branch])
             .status()?;
 
         // git add . -A
         let status = Command::new(&self.git_cmd)
-            .args(&["add", ".", "-A"])
+            .args(["add", ".", "-A"])
             .status()?;
         if !status.success() {
             return Err(remote::Error::LocalError(io::Error::new(
@@ -221,7 +221,7 @@ impl remote::Remote for Git {
         }
         // git commit -m '[bacup] snapshot'
         let status = Command::new(&self.git_cmd)
-            .args(&["commit", "-m", "[bacup] snapshot"])
+            .args(["commit", "-m", "[bacup] snapshot"])
             .status()?;
         if !status.success() {
             return Err(remote::Error::LocalError(io::Error::new(
@@ -234,7 +234,7 @@ impl remote::Remote for Git {
         }
         // git push origin <branch>
         let status = Command::new(&self.git_cmd)
-            .args(&["push", "origin", &self.config.branch])
+            .args(["push", "origin", &self.config.branch])
             .status()?;
         if !status.success() {
             return Err(remote::Error::LocalError(io::Error::new(
@@ -303,17 +303,17 @@ impl remote::Remote for Git {
 
         // git switch -c branch (ignore failures - we might be in the branch already)
         Command::new(&self.git_cmd)
-            .args(&["switch", "-c", &self.config.branch])
+            .args(["switch", "-c", &self.config.branch])
             .status()?;
 
         // git pull origin branch (ignore failures)
         Command::new(&self.git_cmd)
-            .args(&["pull", "origin", &self.config.branch])
+            .args(["pull", "origin", &self.config.branch])
             .status()?;
 
         // git add . -A
         let status = Command::new(&self.git_cmd)
-            .args(&["add", ".", "-A"])
+            .args(["add", ".", "-A"])
             .status()?;
         if !status.success() {
             return Err(remote::Error::LocalError(io::Error::new(
@@ -323,7 +323,7 @@ impl remote::Remote for Git {
         }
         // git commit -m '[bacup] snapshot'
         let status = Command::new(&self.git_cmd)
-            .args(&["commit", "-m", "[bacup] snapshot"])
+            .args(["commit", "-m", "[bacup] snapshot"])
             .status()?;
         if !status.success() {
             return Err(remote::Error::LocalError(io::Error::new(
@@ -336,7 +336,7 @@ impl remote::Remote for Git {
         }
         // git push origin <branch>
         let status = Command::new(&self.git_cmd)
-            .args(&["push", "origin", &self.config.branch])
+            .args(["push", "origin", &self.config.branch])
             .status()?;
         if !status.success() {
             return Err(remote::Error::LocalError(io::Error::new(

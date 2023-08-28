@@ -12,9 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub use aws_sdk_s3::Error;
-use aws_sdk_s3::{types::ByteStream, Client, Region};
-use aws_types::credentials::SharedCredentialsProvider;
+use aws_credential_types::provider::SharedCredentialsProvider;
+use aws_sdk_s3::primitives::ByteStream;
+pub use aws_sdk_s3::{Client, Error};
+use aws_types::region::Region;
 
 use crate::config::AwsConfig;
 use crate::remotes::remote;
@@ -85,7 +86,7 @@ impl AwsBucket {
         let config = aws_config::from_env()
             .region(region)
             .credentials_provider(SharedCredentialsProvider::new(
-                aws_types::credentials::Credentials::from_keys(
+                aws_credential_types::Credentials::from_keys(
                     config.access_key,
                     config.secret_key,
                     None,

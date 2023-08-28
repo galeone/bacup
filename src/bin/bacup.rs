@@ -212,7 +212,7 @@ async fn main() -> Result<(), i32> {
         info!("Backup {} -> {} configured", config.what, config.r#where);
     }
 
-    let mut scheduler = JobScheduler::new().unwrap();
+    let mut scheduler = JobScheduler::new().await.unwrap();
     // scheduler.shutdown_on_ctrl_c();
 
     for (name, job) in backup {
@@ -232,7 +232,7 @@ async fn main() -> Result<(), i32> {
         }
     }
 
-    if scheduler.start().is_err() {
+    if scheduler.start().await.is_err() {
         error!("Unable to start the scheduler");
         return Err(-1);
     }
