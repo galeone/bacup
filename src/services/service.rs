@@ -29,7 +29,7 @@ impl Drop for Dump {
             if path.exists() {
                 #[allow(unused_must_use)]
                 {
-                    std::fs::remove_file(&path);
+                    std::fs::remove_file(path);
                 }
             }
         }
