@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub use aws_sdk_s3::{Error, Client};
-use aws_sdk_s3::primitives::ByteStream;
-use aws_types::region::Region;
 use aws_credential_types::provider::SharedCredentialsProvider;
+use aws_sdk_s3::primitives::ByteStream;
+pub use aws_sdk_s3::{Client, Error};
+use aws_types::region::Region;
 
 use crate::config::AwsConfig;
 use crate::remotes::remote;
