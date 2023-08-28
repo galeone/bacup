@@ -140,7 +140,7 @@ impl<'a> Backup {
 
     fn parse_weekly(input: &str) -> Result<String, Error> {
         // Monday 15:40 or Weekly Monday 15:40
-        let weekdays = vec![
+        let weekdays = [
             (Weekday::Mon, "Monday"),
             (Weekday::Tue, "Tuesday"),
             (Weekday::Wed, "Wednesday"),
@@ -170,7 +170,7 @@ impl<'a> Backup {
                 let hm = hm.unwrap();
                 let input = input.replace(&format!("{:02}:{:02}", hm.0, hm.1), "");
                 let input = input.trim();
-                if !vec!["", "weekly"].contains(&input) {
+                if !["", "weekly"].contains(&input) {
                     return Err(Error::InvalidWhenConfiguration(format!(
                         "Expected to consume all the when string, unable to parse \
                         remaining part: {}",
