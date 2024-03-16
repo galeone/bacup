@@ -174,6 +174,8 @@ Configuring the remotes is straightforward. Every remote have a different way of
 
 - Access Key & Secret Key: [Understanding and getting your AWS credentials: programmatic access](https://docs.aws.amazon.com/general/latest/gr/aws-sec-cred-types.html#access-keys-and-secret-access-keys)
 - Region: the region is the region of your bucket.
+- Endpoint: (optional) the endpoint to use for the client, i.e. another s3 compatible service.
+- force_path_style: (optional) Forces this client to use path-style addressing for buckets, necessary for some s3 compatible gateways.
 
 ### SSH
 

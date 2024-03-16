@@ -41,8 +41,10 @@ pub struct SshConfig {
 #[derive(Serialize, Deserialize)]
 pub struct AwsConfig {
     pub region: String,
+    pub endpoint: Option<String>,
     pub access_key: String,
     pub secret_key: String,
+    pub force_path_style: Option<bool>
 }
 
 #[derive(Serialize, Deserialize)]
