@@ -83,7 +83,7 @@ impl Bucket {
 impl AwsBucket {
     pub async fn new(config: AwsConfig, bucket_name: &str) -> Result<AwsBucket, Error> {
         let region = Region::new(config.region);
-        let config = aws_config::from_env()
+        let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
             .region(region)
             .credentials_provider(SharedCredentialsProvider::new(
                 aws_credential_types::Credentials::from_keys(
