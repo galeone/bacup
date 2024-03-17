@@ -83,8 +83,12 @@ impl Bucket {
 impl AwsBucket {
     pub async fn new(config: AwsConfig, bucket_name: &str) -> Result<AwsBucket, Error> {
         let region = Region::new(config.region);
-        let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
-            .region(region)
+        let mut builder =
+            aws_config::defaults(aws_config::BehaviorVersion::latest()).region(region);
+        if let Some(endpoint) = &config.endpoint {
+            builder = builder.endpoint_url(endpoint);
+        }
+        let sdk_config = builder
             .credentials_provider(SharedCredentialsProvider::new(
                 aws_credential_types::Credentials::from_keys(
                     config.access_key,
@@ -95,7 +99,9 @@ impl AwsBucket {
             .load()
             .await;
 
-        let client = Client::new(&config);
+        let mut conf_builder = aws_sdk_s3::config::Builder::from(&sdk_config);
+        conf_builder.set_force_path_style(config.force_path_style);
+        let client = Client::from_conf(conf_builder.build());
         let bucket = Bucket {
             client,
             bucket_name: bucket_name.to_owned(),
