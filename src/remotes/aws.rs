@@ -83,7 +83,8 @@ impl Bucket {
 impl AwsBucket {
     pub async fn new(config: AwsConfig, bucket_name: &str) -> Result<AwsBucket, Error> {
         let region = Region::new(config.region);
-        let mut builder = aws_config::defaults(aws_config::BehaviorVersion::latest()).region(region);
+        let mut builder =
+            aws_config::defaults(aws_config::BehaviorVersion::latest()).region(region);
         if let Some(endpoint) = &config.endpoint {
             builder = builder.endpoint_url(endpoint);
         }

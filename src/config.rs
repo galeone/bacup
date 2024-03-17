@@ -44,7 +44,7 @@ pub struct AwsConfig {
     pub endpoint: Option<String>,
     pub access_key: String,
     pub secret_key: String,
-    pub force_path_style: Option<bool>
+    pub force_path_style: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize)]
