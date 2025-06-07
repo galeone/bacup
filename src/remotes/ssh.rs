@@ -104,16 +104,13 @@ impl Ssh {
 
         let output = Command::new(&ssh_cmd).args(&args).output();
         if output.is_err() {
-            return Err(Error::RuntimeError(io::Error::new(
-                io::ErrorKind::Other,
-                format!(
-                    "ssh connection to {}@{}:{} failed with error: {}",
-                    config.username,
-                    config.host,
-                    config.port,
-                    output.err().unwrap(),
-                ),
-            )));
+            return Err(Error::RuntimeError(io::Error::other(format!(
+                "ssh connection to {}@{}:{} failed with error: {}",
+                config.username,
+                config.host,
+                config.port,
+                output.err().unwrap(),
+            ))));
         }
 
         let output = output.unwrap();
@@ -150,16 +147,13 @@ impl Ssh {
             let status = status.unwrap();
 
             if !status.success() {
-                return Err(Error::RuntimeError(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!(
-                        "ssh connection to {}@{}:{} failed with status: {}",
-                        config.username,
-                        config.host,
-                        config.port,
-                        status.code().unwrap(),
-                    ),
-                )));
+                return Err(Error::RuntimeError(io::Error::other(format!(
+                    "ssh connection to {}@{}:{} failed with status: {}",
+                    config.username,
+                    config.host,
+                    config.port,
+                    status.code().unwrap(),
+                ))));
             }
         }
 
@@ -209,10 +203,10 @@ impl remote::Remote for Ssh {
             return Ok(output.split_whitespace().map(|s| s.to_string()).collect());
         }
 
-        Err(remote::Error::LocalError(io::Error::new(
-            io::ErrorKind::Other,
-            format!("Error during ls {} on remote host", remote_path),
-        )))
+        Err(remote::Error::LocalError(io::Error::other(format!(
+            "Error during ls {} on remote host",
+            remote_path
+        ))))
     }
 
     async fn delete(&self, remote_path: &Path) -> Result<(), remote::Error> {
@@ -235,10 +229,10 @@ impl remote::Remote for Ssh {
             return Ok(());
         }
 
-        Err(remote::Error::LocalError(io::Error::new(
-            io::ErrorKind::Other,
-            format!("Error during rm -r {} on remote host", remote_path),
-        )))
+        Err(remote::Error::LocalError(io::Error::other(format!(
+            "Error during rm -r {} on remote host",
+            remote_path
+        ))))
     }
 
     async fn upload_file(&self, path: &Path, remote_path: &Path) -> Result<(), remote::Error> {
@@ -283,10 +277,7 @@ impl remote::Remote for Ssh {
                 Stderr: {}\nStdout: {}",
                 errlog, outlog
             );
-            return Err(remote::Error::LocalError(io::Error::new(
-                io::ErrorKind::Other,
-                message,
-            )));
+            return Err(remote::Error::LocalError(io::Error::other(message)));
         }
         Ok(())
     }
@@ -313,8 +304,7 @@ impl remote::Remote for Ssh {
         ssh.stdin.as_mut().unwrap().write_all(&compressed_bytes)?;
         let status = ssh.wait()?;
         if !status.success() {
-            return Err(remote::Error::LocalError(io::Error::new(
-                io::ErrorKind::Other,
+            return Err(remote::Error::LocalError(io::Error::other(
                 "Failure while executing ssh command",
             )));
         }
@@ -356,8 +346,7 @@ impl remote::Remote for Ssh {
             .status()?;
 
         if !status.success() {
-            return Err(remote::Error::LocalError(io::Error::new(
-                io::ErrorKind::Other,
+            return Err(remote::Error::LocalError(io::Error::other(
                 "Failed to execute rsync trought ssh command",
             )));
         }

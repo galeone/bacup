@@ -79,9 +79,9 @@ impl Folder {
         if !path.exists() {
             return Err(Error::DoesNotExist(PathBuf::from(path)));
         }
-        return Ok(Folder {
+        Ok(Folder {
             pattern: String::from(path.join("**").join("*").to_str().unwrap()),
-        });
+        })
     }
 }
 

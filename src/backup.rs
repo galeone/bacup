@@ -62,7 +62,7 @@ pub struct Backup {
     pub keep_last: Option<u32>,
 }
 
-impl<'a> Backup {
+impl Backup {
     fn get_hours_and_minutes(when: &str) -> Option<(i8, i8)> {
         let re = Regex::new(r"(\d{2}):(\d{2})").unwrap();
         let cap = re.captures(when)?;

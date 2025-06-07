@@ -82,18 +82,13 @@ impl From<Error> for remote::Error {
     fn from(error: Error) -> Self {
         match error {
             Error::CommandNotFound(error) => {
-                remote::Error::LocalError(std::io::Error::new(std::io::ErrorKind::Other, error))
+                remote::Error::LocalError(std::io::Error::other(error))
             }
-            Error::InvalidPrivateKey(msg) => {
-                remote::Error::LocalError(std::io::Error::new(std::io::ErrorKind::Other, msg))
+            Error::InvalidPrivateKey(msg) => remote::Error::LocalError(std::io::Error::other(msg)),
+            Error::RuntimeError(error) => remote::Error::LocalError(std::io::Error::other(error)),
+            Error::DoesNotExist(path) => {
+                remote::Error::LocalError(std::io::Error::other(path.to_str().unwrap()))
             }
-            Error::RuntimeError(error) => {
-                remote::Error::LocalError(std::io::Error::new(std::io::ErrorKind::Other, error))
-            }
-            Error::DoesNotExist(path) => remote::Error::LocalError(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                path.to_str().unwrap(),
-            )),
         }
     }
 }
@@ -126,7 +121,7 @@ impl Git {
     }
 
     fn clone_repository(&self) -> Result<PathBuf, Error> {
-        let dest = PathBuf::from(&self.config.repository.split('/').last().unwrap());
+        let dest = PathBuf::from(&self.config.repository.split('/').next_back().unwrap());
         if dest.exists() {
             let git_repo = dest.join(".git");
             if git_repo.exists() && git_repo.is_dir() {
@@ -142,17 +137,14 @@ impl Git {
             .args(["clone", &url, "--depth", "1"])
             .status()?;
         if !status.success() {
-            return Err(Error::RuntimeError(io::Error::new(
-                io::ErrorKind::Other,
-                format!(
-                    "Unable to execute {} clone {} --depth 1",
-                    self.git_cmd.display(),
-                    &url
-                ),
-            )));
+            return Err(Error::RuntimeError(io::Error::other(format!(
+                "Unable to execute {} clone {} --depth 1",
+                self.git_cmd.display(),
+                &url
+            ))));
         }
 
-        let dest = PathBuf::from(&self.config.repository.split('/').last().unwrap());
+        let dest = PathBuf::from(&self.config.repository.split('/').next_back().unwrap());
         if !dest.exists() {
             return Err(Error::DoesNotExist(dest));
         }
@@ -167,15 +159,13 @@ impl remote::Remote for Git {
     }
 
     async fn enumerate(&self, _remote_path: &Path) -> Result<Vec<String>, remote::Error> {
-        Err(remote::Error::LocalError(io::Error::new(
-            io::ErrorKind::Other,
+        Err(remote::Error::LocalError(io::Error::other(
             "enumerate is not possibile on Git remote!",
         )))
     }
 
     async fn delete(&self, _remote_path: &Path) -> Result<(), remote::Error> {
-        Err(remote::Error::LocalError(io::Error::new(
-            io::ErrorKind::Other,
+        Err(remote::Error::LocalError(io::Error::other(
             "delete makes no sense on git remote. Change the repo, and upload the new repo status.",
         )))
     }
@@ -214,33 +204,30 @@ impl remote::Remote for Git {
             .args(["add", ".", "-A"])
             .status()?;
         if !status.success() {
-            return Err(remote::Error::LocalError(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Unable to execute git add . -A into {}", dest.display()),
-            )));
+            return Err(remote::Error::LocalError(io::Error::other(format!(
+                "Unable to execute git add . -A into {}",
+                dest.display()
+            ))));
         }
         // git commit -m '[bacup] snapshot'
         let status = Command::new(&self.git_cmd)
             .args(["commit", "-m", "[bacup] snapshot"])
             .status()?;
         if !status.success() {
-            return Err(remote::Error::LocalError(io::Error::new(
-                io::ErrorKind::Other,
-                format!(
-                    "Unable to execute git commit -m [bacup] snapshot into {}",
-                    dest.display()
-                ),
-            )));
+            return Err(remote::Error::LocalError(io::Error::other(format!(
+                "Unable to execute git commit -m [bacup] snapshot into {}",
+                dest.display()
+            ))));
         }
         // git push origin <branch>
         let status = Command::new(&self.git_cmd)
             .args(["push", "origin", &self.config.branch])
             .status()?;
         if !status.success() {
-            return Err(remote::Error::LocalError(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Unable to execute git add . -A into {}", dest.display()),
-            )));
+            return Err(remote::Error::LocalError(io::Error::other(format!(
+                "Unable to execute git add . -A into {}",
+                dest.display()
+            ))));
         }
         Ok(())
     }
@@ -316,33 +303,30 @@ impl remote::Remote for Git {
             .args(["add", ".", "-A"])
             .status()?;
         if !status.success() {
-            return Err(remote::Error::LocalError(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Unable to execute git add . -A into {}", dest.display()),
-            )));
+            return Err(remote::Error::LocalError(io::Error::other(format!(
+                "Unable to execute git add . -A into {}",
+                dest.display()
+            ))));
         }
         // git commit -m '[bacup] snapshot'
         let status = Command::new(&self.git_cmd)
             .args(["commit", "-m", "[bacup] snapshot"])
             .status()?;
         if !status.success() {
-            return Err(remote::Error::LocalError(io::Error::new(
-                io::ErrorKind::Other,
-                format!(
-                    "Unable to execute git commit -m [bacup] snapshot into {}",
-                    dest.display()
-                ),
-            )));
+            return Err(remote::Error::LocalError(io::Error::other(format!(
+                "Unable to execute git commit -m [bacup] snapshot into {}",
+                dest.display()
+            ))));
         }
         // git push origin <branch>
         let status = Command::new(&self.git_cmd)
             .args(["push", "origin", &self.config.branch])
             .status()?;
         if !status.success() {
-            return Err(remote::Error::LocalError(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Unable to execute git add . -A into {}", dest.display()),
-            )));
+            return Err(remote::Error::LocalError(io::Error::other(format!(
+                "Unable to execute git add . -A into {}",
+                dest.display()
+            ))));
         }
         Ok(())
     }

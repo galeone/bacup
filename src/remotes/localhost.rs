@@ -121,10 +121,10 @@ impl remote::Remote for Localhost {
         use tokio::fs;
 
         if !path.exists() {
-            return Err(remote::Error::LocalError(io::Error::new(
-                io::ErrorKind::Other,
-                format!("{} does not exist", path.display()),
-            )));
+            return Err(remote::Error::LocalError(io::Error::other(format!(
+                "{} does not exist",
+                path.display()
+            ))));
         }
 
         let remote_path = if remote_path.is_absolute() {

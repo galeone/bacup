@@ -69,10 +69,10 @@ impl Docker {
         }
         let code = status.unwrap().code().unwrap();
         if code != 0 {
-            return Err(Error::RuntimeError(io::Error::new(
-                io::ErrorKind::Other,
-                format!("docker run hello-world failed, exit code {}", code),
-            )));
+            return Err(Error::RuntimeError(io::Error::other(format!(
+                "docker run hello-world failed, exit code {}",
+                code
+            ))));
         }
 
         let mut args: Vec<String> = vec![
@@ -114,10 +114,10 @@ impl Service for Docker {
             .join(PathBuf::from(format!("{}.dump", self.name)));
         let parent = dest.parent().unwrap();
         if !parent.exists() {
-            return Err(Error::RuntimeError(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Folder {} does not exist.", parent.display()),
-            ))
+            return Err(Error::RuntimeError(io::Error::other(format!(
+                "Folder {} does not exist.",
+                parent.display()
+            )))
             .into());
         }
 

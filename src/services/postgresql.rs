@@ -82,10 +82,10 @@ impl PostgreSql {
         }
         let code = status.unwrap().code().unwrap();
         if code != 0 {
-            return Err(Error::RuntimeError(io::Error::new(
-                io::ErrorKind::Other,
-                format!("pg_isready failed, exit code {}", code),
-            )));
+            return Err(Error::RuntimeError(io::Error::other(format!(
+                "pg_isready failed, exit code {}",
+                code
+            ))));
         }
 
         // Find psql and use it to check if the db exists and we can connect with
@@ -106,21 +106,15 @@ impl PostgreSql {
 
         let stderr = std::str::from_utf8(&output.stderr).unwrap().trim();
         if !stderr.is_empty() {
-            return Err(Error::RuntimeError(io::Error::new(
-                io::ErrorKind::Other,
-                stderr,
-            )));
+            return Err(Error::RuntimeError(io::Error::other(stderr)));
         }
 
         let stdout = std::str::from_utf8(&output.stdout).unwrap().trim();
         if stdout == "0" {
-            return Err(Error::RuntimeError(io::Error::new(
-                io::ErrorKind::Other,
-                format!(
-                    "database {} does not exit or user {} not allowed to query the db",
-                    db_name, username
-                ),
-            )));
+            return Err(Error::RuntimeError(io::Error::other(format!(
+                "database {} does not exit or user {} not allowed to query the db",
+                db_name, username
+            ))));
         }
         // Remove the specific arguments for the psql invocation
         args.pop();
@@ -164,10 +158,10 @@ impl Service for PostgreSql {
             .join(PathBuf::from(format!("{}-dump.sql", self.name)));
         let parent = dest.parent().unwrap();
         if !parent.exists() {
-            return Err(Error::RuntimeError(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Folder {} does not exist.", parent.display()),
-            ))
+            return Err(Error::RuntimeError(io::Error::other(format!(
+                "Folder {} does not exist.",
+                parent.display()
+            )))
             .into());
         }
 
