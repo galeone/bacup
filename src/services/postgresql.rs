@@ -196,19 +196,6 @@ mod tests {
     const PORT: u16 = 5432;
     const NAME: &str = "test_service_db";
 
-    struct Dump {
-        path: PathBuf,
-    }
-
-    impl Drop for Dump {
-        fn drop(&mut self) {
-            #[allow(unused_must_use)]
-            {
-                std::fs::remove_file(&self.path);
-            }
-        }
-    }
-
     #[tokio::test]
     #[ignore]
     async fn test_new_connection_ok() {
