@@ -128,10 +128,7 @@ impl Backup {
             }
 
             // sec   min   hour   day of month   month   day of week
-            return Ok(format!(
-                "{} {} {} {} {} {}",
-                0, hm.1, hm.0, "*", "*", "*"
-            ));
+            return Ok(format!("{} {} {} {} {} {}", 0, hm.1, hm.0, "*", "*", "*"));
         }
         Err(Error::InvalidWhenConfiguration(String::from(
             "Unable to find daily identifier",
@@ -180,10 +177,7 @@ impl Backup {
                 let day = Weekday::from_str(&day.0).unwrap().number_from_monday();
 
                 // sec   min   hour   day of month   month   day of week
-                return Ok(format!(
-                    "{} {} {} {} {} {}",
-                    0, hm.1, hm.0, "*", "*", day
-                ));
+                return Ok(format!("{} {} {} {} {} {}", 0, hm.1, hm.0, "*", "*", day));
             }
         }
         Err(Error::InvalidWhenConfiguration(String::from(
@@ -226,10 +220,7 @@ impl Backup {
             }
 
             // sec   min   hour   day of month   month   day of week
-            return Ok(format!(
-                "{} {} {} {} {} {}",
-                0, hm.1, hm.0, day, "*", "*"
-            ));
+            return Ok(format!("{} {} {} {} {} {}", 0, hm.1, hm.0, day, "*", "*"));
         }
         Err(Error::InvalidWhenConfiguration(String::from(
             "Unable to find monthly identifier",
@@ -501,12 +492,24 @@ mod tests {
 
     fn validate_cron_expression(when: &str) {
         let result = Backup::parse_when(when);
-        assert!(result.is_ok(), "Failed to parse when string '{}': {}", when, result.err().unwrap());
+        assert!(
+            result.is_ok(),
+            "Failed to parse when string '{}': {}",
+            when,
+            result.err().unwrap()
+        );
         let cron_str = result.unwrap();
         // Same configuration of tokio-cron-scheduler
-        assert!(Cron::new(&cron_str).with_seconds_required()
-            .with_dom_and_dow().parse().is_ok(), 
-               "Invalid croner expression '{}' for when string '{}'", cron_str, when);
+        assert!(
+            Cron::new(&cron_str)
+                .with_seconds_required()
+                .with_dom_and_dow()
+                .parse()
+                .is_ok(),
+            "Invalid croner expression '{}' for when string '{}'",
+            cron_str,
+            when
+        );
     }
 
     #[test]
