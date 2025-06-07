@@ -127,10 +127,10 @@ impl Backup {
                 )));
             }
 
-            // sec   min   hour   day of month   month   day of week   year
+            // sec   min   hour   day of month   month   day of week
             return Ok(format!(
-                "{} {} {} {} {} {} {}",
-                0, hm.1, hm.0, "*", "*", "*", "*"
+                "{} {} {} {} {} {}",
+                0, hm.1, hm.0, "*", "*", "*"
             ));
         }
         Err(Error::InvalidWhenConfiguration(String::from(
@@ -179,10 +179,10 @@ impl Backup {
                 }
                 let day = Weekday::from_str(&day.0).unwrap().number_from_monday();
 
-                // sec   min   hour   day of month   month   day of week   year
+                // sec   min   hour   day of month   month   day of week
                 return Ok(format!(
-                    "{} {} {} {} {} {} {}",
-                    0, hm.1, hm.0, "*", "*", day, "*"
+                    "{} {} {} {} {} {}",
+                    0, hm.1, hm.0, "*", "*", day
                 ));
             }
         }
@@ -225,10 +225,10 @@ impl Backup {
                 )));
             }
 
-            // sec   min   hour   day of month   month   day of week   year
+            // sec   min   hour   day of month   month   day of week
             return Ok(format!(
-                "{} {} {} {} {} {} {}",
-                0, hm.1, hm.0, day, "*", "*", "*"
+                "{} {} {} {} {} {}",
+                0, hm.1, hm.0, day, "*", "*"
             ));
         }
         Err(Error::InvalidWhenConfiguration(String::from(
@@ -237,8 +237,8 @@ impl Backup {
     }
 
     fn parse_when(when: &str) -> Result<String, Error> {
-        // sec   min   hour   day of month   month   day of week   year
-        // *     *     *      *              *       *             *
+        // sec   min   hour   day of month   month   day of week
+        // *     *     *      *              *       *
         let input = when.to_lowercase();
         let daily = Backup::parse_daily(&input);
         if daily.is_ok() {
@@ -497,74 +497,55 @@ impl Backup {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use croner::Cron;
+
+    fn validate_cron_expression(when: &str) {
+        let result = Backup::parse_when(when);
+        assert!(result.is_ok(), "Failed to parse when string '{}': {}", when, result.err().unwrap());
+        let cron_str = result.unwrap();
+        // Same configuration of tokio-cron-scheduler
+        assert!(Cron::new(&cron_str).with_seconds_required()
+            .with_dom_and_dow().parse().is_ok(), 
+               "Invalid croner expression '{}' for when string '{}'", cron_str, when);
+    }
 
     #[test]
     fn test_parse_when_daily() {
-        let result = Backup::parse_when("daily 00:00");
-        assert!(result.is_ok(), "{}", result.err().unwrap());
-        let result = Backup::parse_when("daily 12:30");
-        assert!(result.is_ok(), "{}", result.err().unwrap());
-        let result = Backup::parse_when("Daily 00:00");
-        assert!(result.is_ok(), "{}", result.err().unwrap());
-        let result = Backup::parse_when("DAILY 11:11");
-        assert!(result.is_ok(), "{}", result.err().unwrap());
+        // Valid cases
+        validate_cron_expression("daily 00:00");
+        validate_cron_expression("daily 12:30");
+        validate_cron_expression("Daily 00:00");
+        validate_cron_expression("DAILY 11:11");
 
-        let result = Backup::parse_when("dayly 00:00");
-        assert!(result.is_err());
-        let result = Backup::parse_when("daily 55:00");
-        assert!(result.is_err());
-        let result = Backup::parse_when("daily 00:61");
-        assert!(result.is_err());
-        let result = Backup::parse_when("daily 00:60");
-        assert!(result.is_err());
-        let result = Backup::parse_when("daily 24:01");
-        assert!(result.is_err());
+        // Invalid cases
+        assert!(Backup::parse_when("dayly 00:00").is_err());
+        assert!(Backup::parse_when("daily 55:00").is_err());
+        assert!(Backup::parse_when("daily 00:61").is_err());
+        assert!(Backup::parse_when("daily 00:60").is_err());
+        assert!(Backup::parse_when("daily 24:01").is_err());
     }
 
     #[test]
     fn test_parse_when_weekly() {
-        let result = Backup::parse_when("weekly monday 12:30");
-        assert!(result.is_ok(), "{}", result.err().unwrap());
-        let result = Backup::parse_when("weekly mon 12:30");
-        assert!(result.is_ok(), "{}", result.err().unwrap());
+        // Valid cases
+        validate_cron_expression("weekly monday 12:30");
+        validate_cron_expression("weekly mon 12:30");
+        validate_cron_expression("weekly tuesday 12:30");
+        validate_cron_expression("weekly tue 12:30");
+        validate_cron_expression("weekly wednesday 12:30");
+        validate_cron_expression("weekly wed 12:30");
+        validate_cron_expression("weekly thursday 12:30");
+        validate_cron_expression("weekly thu 12:30");
+        validate_cron_expression("weekly friday 12:30");
+        validate_cron_expression("weekly fri 12:30");
+        validate_cron_expression("weekly Saturday 12:30");
+        validate_cron_expression("weekly Sat 12:30");
+        validate_cron_expression("WEEKLY SUN 12:30");
+        validate_cron_expression("weekly sunday 12:30");
+        validate_cron_expression(" SUN 12:30");
+        validate_cron_expression(" sunday 12:30");
 
-        let result = Backup::parse_when("weekly tuesday 12:30");
-        assert!(result.is_ok(), "{}", result.err().unwrap());
-        let result = Backup::parse_when("weekly tue 12:30");
-        assert!(result.is_ok(), "{}", result.err().unwrap());
-
-        let result = Backup::parse_when("weekly wednesday 12:30");
-        assert!(result.is_ok(), "{}", result.err().unwrap());
-        let result = Backup::parse_when("weekly wed 12:30");
-        assert!(result.is_ok(), "{}", result.err().unwrap());
-
-        let result = Backup::parse_when("weekly thursday 12:30");
-        assert!(result.is_ok(), "{}", result.err().unwrap());
-        let result = Backup::parse_when("weekly thu 12:30");
-        assert!(result.is_ok(), "{}", result.err().unwrap());
-
-        let result = Backup::parse_when("weekly friday 12:30");
-        assert!(result.is_ok(), "{}", result.err().unwrap());
-        let result = Backup::parse_when("weekly fri 12:30");
-        assert!(result.is_ok(), "{}", result.err().unwrap());
-
-        let result = Backup::parse_when("weekly Saturday 12:30");
-        assert!(result.is_ok(), "{}", result.err().unwrap());
-
-        let result = Backup::parse_when("weekly Sat 12:30");
-        assert!(result.is_ok(), "{}", result.err().unwrap());
-
-        let result = Backup::parse_when("WEEKLY SUN 12:30");
-        assert!(result.is_ok(), "{}", result.err().unwrap());
-        let result = Backup::parse_when("weekly sunday 12:30");
-        assert!(result.is_ok(), "{}", result.err().unwrap());
-
-        let result = Backup::parse_when(" SUN 12:30");
-        assert!(result.is_ok(), "{}", result.err().unwrap());
-        let result = Backup::parse_when(" sunday 12:30");
-        assert!(result.is_ok(), "{}", result.err().unwrap());
-
-        // Errors
+        // Invalid cases
         assert!(Backup::parse_when("watly monzay 00:00").is_err());
         assert!(Backup::parse_when("monzay 00:00").is_err());
         assert!(Backup::parse_when("Moonday 00:00").is_err());
@@ -576,12 +557,11 @@ mod tests {
 
     #[test]
     fn test_parse_when_montly() {
-        let result = Backup::parse_when("Monthly 1 02:30");
-        assert!(result.is_ok(), "{}", result.err().unwrap());
+        // Valid cases
+        validate_cron_expression("Monthly 1 02:30");
+        validate_cron_expression("Monthly 31 02:30");
 
-        let result = Backup::parse_when("Monthly 31 02:30");
-        assert!(result.is_ok(), "{}", result.err().unwrap());
-
+        // Invalid cases
         assert!(Backup::parse_when("Monthly 00:00").is_err());
         assert!(Backup::parse_when("Monthtly -1 00:00").is_err());
         assert!(Backup::parse_when("Monthtly 0 00:00").is_err());

@@ -1,6 +1,6 @@
 [package]
 name = "bacup"
-version = "0.1.15"
+version = "0.1.16"
 description = "An easy-to-use backup tool designed for servers."
 readme = "README.md"
 authors = ["Paolo Galeone <me@pgaleone.eu>"]
@@ -40,3 +40,4 @@ tokio-cron-scheduler = "0.14.0"
 cron = "0.15.0"
 uuid = { version = "1.17.0", features = ["v4"] }
 aws-types = "1.3.7"
+croner = "2.1.0"
