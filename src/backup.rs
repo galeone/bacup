@@ -501,11 +501,7 @@ mod tests {
         let cron_str = result.unwrap();
         // Same configuration of tokio-cron-scheduler
         assert!(
-            Cron::new(&cron_str)
-                .with_seconds_required()
-                .with_dom_and_dow()
-                .parse()
-                .is_ok(),
+            Cron::from_str(&cron_str).is_ok(),
             "Invalid croner expression '{}' for when string '{}'",
             cron_str,
             when
