@@ -101,7 +101,7 @@ impl Zfs {
 
         // If here, the current user is in the allow list for zfs send and snapshot
 
-        let mut args: Vec<String> = vec![
+        let args: Vec<String> = vec![
             String::from("snapshot"),
             String::from("-r"),
             format!(
@@ -110,7 +110,6 @@ impl Zfs {
                 config.snapshot_name.trim()
             ),
         ];
-        args.extend(config.snapshot_name.split_whitespace().map(String::from));
 
         Ok(Zfs {
             name: String::from(name),
@@ -170,7 +169,6 @@ impl Service for Zfs {
         let dest_file = File::create(&dest).await?;
 
         let send_args = vec![
-            self.args[0].to_string(),
             String::from("send"),
             String::from("-R"),
             String::from("-v"),
