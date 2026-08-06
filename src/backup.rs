@@ -308,7 +308,7 @@ impl Backup {
                         let keep_last = inst.keep_last;
 
                         // First call dump, to trigger the dump service if present
-                        info!("[{}] Calling dump...", &name);
+                        info!("[{}] Calling dump...", name);
                         let dump = match service.dump().await {
                             Err(error) => {
                                 error!("{}", Error::GeneralError(error));

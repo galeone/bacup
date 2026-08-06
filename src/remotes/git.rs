@@ -130,7 +130,7 @@ impl Git {
         }
         let url = format!(
             "ssh://{}@{}:{}/{}",
-            &self.config.username, &self.config.host, &self.config.port, &self.config.repository
+            self.config.username, self.config.host, self.config.port, self.config.repository
         );
 
         let status = Command::new(&self.git_cmd)
@@ -140,7 +140,7 @@ impl Git {
             return Err(Error::RuntimeError(io::Error::other(format!(
                 "Unable to execute {} clone {} --depth 1",
                 self.git_cmd.display(),
-                &url
+                url
             ))));
         }
 
