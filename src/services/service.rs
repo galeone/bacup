@@ -38,6 +38,10 @@ impl Drop for Dump {
 
 #[async_trait]
 pub trait Service: DynClone {
+
+    // dump executes the dump command and creates the file/files to backup. Those files will be listed by list().
     async fn dump(&self) -> Result<Dump, Box<dyn std::error::Error>>;
+
+    // list returns the list of the paths that should be uploaded to the Remote - those are created by dump().
     async fn list(&self) -> Vec<PathBuf>;
 }

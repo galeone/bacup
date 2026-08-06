@@ -80,6 +80,14 @@ When configuring the backups, the field **when** accepts configuration strings i
     container_name = "docker_postgres_1"
     command = "pg_dumpall -c -U postgres" # dump to stdout always
 
+[zfs]
+    [zfs.root]
+    snapshot_name = "root-fs"
+    dataset = "zroot"
+    [zfs.storage]
+    snapshot_name = "storage-fs"
+    dataset = "storage"
+
 # mapping services to remote
 [backup]
     # Compress the DB dump and upload it to aws

@@ -15,4 +15,5 @@
 pub mod docker;
 pub mod folders;
 pub mod postgresql;
+pub mod zfs;
 pub mod service;
