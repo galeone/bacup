@@ -34,6 +34,7 @@ use bacup::services::folders::Folder;
 use bacup::services::postgresql::PostgreSql;
 use bacup::services::service::Service;
 
+use bacup::services::zfs::Zfs;
 use log::*;
 use structopt::StructOpt;
 
@@ -168,6 +169,19 @@ async fn main() -> Result<(), i32> {
                 services.insert(
                     key,
                     Box::new(Docker::new(instance_config, &service_name).await.unwrap()),
+                );
+            }
+        }
+        None => warn!("No Docker to backup."),
+    }
+
+    match config.zfs {
+        Some(zfs) => {
+            for (service_name, instance_config) in zfs {
+                let key = format!("zfs.{}", service_name);
+                services.insert(
+                    key,
+                    Box::new(Zfs::new(instance_config, &service_name).await.unwrap()),
                 );
             }
         }
