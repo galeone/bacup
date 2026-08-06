@@ -66,7 +66,8 @@ impl Zfs {
         let child = Command::new(&cmd)
             .args(vec![String::from("allow"), config.dataset.clone()])
             // capture output to variable to check if the user is there
-            .stdout(Stdio::piped()).spawn();
+            .stdout(Stdio::piped())
+            .spawn();
 
         if let Err(error) = child {
             return Err(Error::RuntimeError(error));
@@ -76,7 +77,7 @@ impl Zfs {
         let output = child.wait_with_output().await;
 
         if let Err(err) = output {
-            return Err(Error::RuntimeError(err))
+            return Err(Error::RuntimeError(err));
         }
         let output = output.unwrap();
         let status = output.status;
@@ -92,7 +93,10 @@ impl Zfs {
         // Check if the string user $USER send,snapshot is in the stdout
         let needle = format!("user {} send,snapshot", std::env::var("USER").unwrap());
         if !stdout.contains(&needle) {
-            return Err(Error::ZfsError(format!("\"{}\" not found in output of `zfs allow {}`", needle, config.dataset)));
+            return Err(Error::ZfsError(format!(
+                "\"{}\" not found in output of `zfs allow {}`",
+                needle, config.dataset
+            )));
         }
 
         // If here, the current user is in the allow list for zfs send and snapshot
@@ -100,7 +104,11 @@ impl Zfs {
         let mut args: Vec<String> = vec![
             String::from("snapshot"),
             String::from("-r"),
-            format!("{}@{}", config.dataset.clone().trim(),config.snapshot_name.trim()),
+            format!(
+                "{}@{}",
+                config.dataset.clone().trim(),
+                config.snapshot_name.trim()
+            ),
         ];
         args.extend(config.snapshot_name.split_whitespace().map(String::from));
 
@@ -148,8 +156,7 @@ impl Service for Zfs {
         // Step 2, send the checkpoint to a local file, named: name-date.snapshot
         let dest = std::env::current_dir()
             .unwrap()
-            .join(PathBuf::from(format!("{}-{}.snapshot", self.name, date
-        )));
+            .join(PathBuf::from(format!("{}-{}.snapshot", self.name, date)));
 
         let parent = dest.parent().unwrap();
         if !parent.exists() {
