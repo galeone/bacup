@@ -18,6 +18,8 @@ use std::path::PathBuf;
 use std::string::String;
 use std::vec::Vec;
 
+use log::info;
+
 use crate::config::ZfsConfig;
 use crate::services::service::{Dump, Service};
 
@@ -63,18 +65,13 @@ impl Zfs {
 
         // Verify zfs is working and the current user is in the allow list for executing
         // snapshot and send
-        let child = Command::new(&cmd)
+        let output = Command::new(&cmd)
             .args(vec![String::from("allow"), config.dataset.clone()])
             // capture output to variable to check if the user is there
             .stdout(Stdio::piped())
-            .spawn();
-
-        if let Err(error) = child {
-            return Err(Error::RuntimeError(error));
-        }
-
-        let child = child.unwrap();
-        let output = child.wait_with_output().await;
+            .stderr(Stdio::piped())
+            .output()
+            .await;
 
         if let Err(err) = output {
             return Err(Error::RuntimeError(err));
@@ -82,7 +79,7 @@ impl Zfs {
         let output = output.unwrap();
         let status = output.status;
         if !status.success() {
-            return Err(Error::ZfsError(format!("Failed to verify zfs user permissions. Please run `zfs allow $USER snapshot,send {}`", config.dataset)));
+            return Err(Error::RuntimeError(io::Error::other(format!("Failed to verify zfs user permissions. Please run `zfs allow $USER snapshot,send {}`", config.dataset))));
         }
 
         let stdout = String::from_utf8(output.stdout).unwrap();
@@ -143,6 +140,7 @@ impl Service for Zfs {
         let checkpoint_name = checkpoint.clone();
 
         // Step 1, execute the checkpoint (atomic, immediate action)
+        info!("Executing: {} {:?}", self.cmd.display(), args);
         let status = Command::new(&self.cmd)
             .args(args)
             .stdout(Stdio::null())
@@ -175,6 +173,12 @@ impl Service for Zfs {
             checkpoint_name.to_string(),
         ];
 
+        info!(
+            "Executing: {} {:?} > {}",
+            self.cmd.display(),
+            send_args,
+            dest.display()
+        );
         match Command::new(&self.cmd)
             .args(&send_args)
             .stdout(Stdio::from(dest_file.try_into_std().unwrap()))
