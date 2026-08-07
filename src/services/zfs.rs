@@ -132,12 +132,11 @@ impl Service for Zfs {
     }
 
     async fn dump(&self) -> Result<Dump, Box<dyn std::error::Error>> {
-        // Current date in ISO format
-        let date = chrono::Utc::now().format("%Y%m%d-%H%M%S");
-
         let mut args = self.args.clone();
         let checkpoint = args.last_mut().unwrap();
-        checkpoint.push_str(&format!("-{}", date));
+
+        // Current date in ISO format
+        checkpoint.push_str(&format!("-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S")));
 
         let checkpoint_name = checkpoint.clone();
 
@@ -152,10 +151,10 @@ impl Service for Zfs {
             return Err(Error::RuntimeError(status.err().unwrap()).into());
         }
 
-        // Step 2, send the checkpoint to a local file, named: name-date.snapshot
+        // Step 2, send the checkpoint to a local file, named: name.snapshot
         let dest = std::env::current_dir()
             .unwrap()
-            .join(PathBuf::from(format!("{}-{}.snapshot", self.name, date)));
+            .join(PathBuf::from(format!("{}.snapshot", self.name)));
 
         let parent = dest.parent().unwrap();
         if !parent.exists() {
