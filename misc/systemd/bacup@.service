@@ -9,6 +9,7 @@ Restart=on-failure
 User=%I
 Type=simple
 WorkingDirectory=/home/%I/.bacup/
+Environment="CONF_FILE=/home/%I/.bacup/config.toml"
 ExecStart=/home/%I/.cargo/bin/bacup -vv
 
 [Install]

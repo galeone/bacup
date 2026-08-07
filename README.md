@@ -170,9 +170,10 @@ sudo cp misc/systemd/bacup@.service /usr/lib/systemd/system/
 then, the service can be enabled/started in the usual systemd way:
 
 ```
-sudo systemctl start bacup@$USER.service
-sudo systemctl enable bacup@$USER.service
+sudo systemctl enable --now bacup@$USER.service
 ```
+
+**Note**: the working directory is important if you plan to back-up big files. The files are created in that directory before being uploaded, so set it to a location where you have the write right and enough space.
 
 ## Remote configuration
 
