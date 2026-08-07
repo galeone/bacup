@@ -30,7 +30,7 @@ use crate::remotes::aws::Error as AWSError;
 use tempfile::NamedTempFile;
 
 use tokio::fs;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 
 use log::info;
 
@@ -104,21 +104,21 @@ pub trait Remote: DynClone + Send + Sync {
         Self: Sized,
     {
         info!("Compressing file {}...", path.display());
-        let mut content: Vec<u8> = vec![];
         let mut file = match fs::File::open(path).await {
             Ok(file) => file,
             Err(error) => return Err(Error::LocalError(error)),
         };
 
-        file.read_to_end(&mut content).await?;
+        let mut encoder = GzipEncoder::new(Vec::new());
 
-        let mut e = GzipEncoder::new(Vec::new());
-        e.write_all(&content).await?;
-        e.flush().await?;
-        e.shutdown().await?;
+        // Stream the file contents directly into the encoder without loading it all into RAM
+        tokio::io::copy(&mut file, &mut encoder).await?;
+
+        encoder.flush().await?;
+        encoder.shutdown().await?;
 
         info!("Compression of file {} done.", path.display());
-        Ok(e.into_inner())
+        Ok(encoder.into_inner())
     }
 
     fn remote_archive_path(&self, remote_path: &Path) -> PathBuf {
