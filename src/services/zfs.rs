@@ -65,8 +65,10 @@ impl Zfs {
 
         // Verify zfs is working and the current user is in the allow list for executing
         // snapshot and send
+        let args = vec![String::from("allow"), config.dataset.clone()];
+        info!("Executing {} {:?}", cmd.display(), args);
         let output = Command::new(&cmd)
-            .args(vec![String::from("allow"), config.dataset.clone()])
+            .args(args)
             // capture output to variable to check if the user is there
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -79,16 +81,16 @@ impl Zfs {
         let output = output.unwrap();
         let status = output.status;
         if !status.success() {
-            return Err(Error::RuntimeError(io::Error::other(format!("Failed to verify zfs user permissions. Please run `zfs allow $USER snapshot,send {}`", config.dataset))));
+            return Err(Error::ZfsError(format!("Failed to verify zfs user permissions. Please run `zfs allow $USER hold,send,snapshot {}`", config.dataset)));
         }
 
         let stdout = String::from_utf8(output.stdout).unwrap();
         if stdout.is_empty() {
-            return Err(Error::ZfsError(format!("Failed to verify zfs user permissions. Please run `zfs allow $USER snapshot,send {}", config.dataset)));
+            return Err(Error::ZfsError(format!("Failed to verify zfs user permissions. Please run `zfs allow $USER hold,send,snapshot {}", config.dataset)));
         }
 
-        // Check if the string user $USER send,snapshot is in the stdout
-        let needle = format!("user {} send,snapshot", std::env::var("USER").unwrap());
+        // Check if the string user $USER hold,send,snapshot is in the stdout
+        let needle = format!("user {} hold,send,snapshot", std::env::var("USER").unwrap());
         if !stdout.contains(&needle) {
             return Err(Error::ZfsError(format!(
                 "\"{}\" not found in output of `zfs allow {}`",
@@ -179,14 +181,25 @@ impl Service for Zfs {
             send_args,
             dest.display()
         );
-        match Command::new(&self.cmd)
+
+        let status = Command::new(&self.cmd)
             .args(&send_args)
             .stdout(Stdio::from(dest_file.try_into_std().unwrap()))
             .status()
-            .await
-        {
-            Ok(_) => Ok(Dump { path: Some(dest) }),
-            Err(error) => Err(Error::RuntimeError(error).into()),
+            .await;
+        if let Err(error) = status {
+            return Err(Error::RuntimeError(error).into());
+        }
+        let status = status?;
+        match status.success() {
+            true => Ok(Dump { path: Some(dest) }),
+            false => Err(Error::RuntimeError(io::Error::other(format!(
+                "{} {:?} failed with exit code {}",
+                self.cmd.display(),
+                self.args,
+                status.code().unwrap()
+            )))
+            .into()),
         }
     }
 }
