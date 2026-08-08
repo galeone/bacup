@@ -1,4 +1,4 @@
-// Copyright 2022 Paolo Galeone <nessuno@nerdz.eu>
+// Copyright 2022-2026 Paolo Galeone <nessuno@nerdz.eu>
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,8 +17,6 @@ use crate::remotes::remote;
 use crate::remotes::ssh;
 
 use tokio::fs;
-use tokio::fs::File;
-use tokio::io::AsyncWriteExt;
 
 use std::io;
 
@@ -238,11 +236,8 @@ impl remote::Remote for Git {
         remote_path: &Path,
     ) -> Result<(), remote::Error> {
         // Read and compress
-        let compressed_bytes = self.compress_file(path).await?;
+        let compressed_file = self.compress_file(path).await?;
         let remote_path = self.remote_compressed_file_path(remote_path);
-
-        let mut buffer = File::create(&remote_path).await?;
-        buffer.write_all(&compressed_bytes).await?;
 
         defer! {
             #[allow(unused_must_use)]
@@ -250,7 +245,8 @@ impl remote::Remote for Git {
                 fs::remove_file(&remote_path);
             }
         }
-        self.upload_file(&remote_path, &remote_path).await?;
+        self.upload_file(compressed_file.path(), &remote_path)
+            .await?;
         Ok(())
     }
 

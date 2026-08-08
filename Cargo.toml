@@ -41,3 +41,5 @@ uuid = { version = "1.24.0", features = ["v4"] }
 aws-types = "1.5.0"
 croner = "3.0.1"
 astral-tokio-tar = "0.6.4"
+get-file-size = "0.1.2"
+aws-smithy-runtime-api = "1.14.0"

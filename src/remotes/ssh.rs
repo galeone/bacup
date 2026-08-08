@@ -1,4 +1,4 @@
-// Copyright 2022 Paolo Galeone <nessuno@nerdz.eu>
+// Copyright 2022-2026 Paolo Galeone <nessuno@nerdz.eu>
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -288,27 +288,42 @@ impl remote::Remote for Ssh {
         remote_path: &Path,
     ) -> Result<(), remote::Error> {
         // Read and compress
-        let compressed_bytes = self.compress_file(path).await?;
+        let compressed_file = self.compress_file(path).await?;
         let remote_path = self.remote_compressed_file_path(remote_path);
 
         // cat file | ssh -Pxxx user@host "cat > file"
-        let mut ssh = Command::new(&self.ssh_cmd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .args(
-                self.ssh_args
-                    .iter()
-                    .chain(once(&format!("cat > {} ", remote_path.display()))),
-            )
+
+        let mut cat = Command::new("cat")
+            .arg(format!("{}", compressed_file.path().display()))
+            .stdout(Stdio::piped())
             .spawn()?;
-        ssh.stdin.as_mut().unwrap().write_all(&compressed_bytes)?;
-        let status = ssh.wait()?;
-        if !status.success() {
-            return Err(remote::Error::LocalError(io::Error::other(
-                "Failure while executing ssh command",
-            )));
+
+        if let Some(cat_output) = cat.stdout.take() {
+            let mut ssh = Command::new(&self.ssh_cmd)
+                .stdin(cat_output)
+                .stdout(Stdio::null())
+                .args(
+                    self.ssh_args
+                        .iter()
+                        .chain(once(&format!("cat > {} ", remote_path.display()))),
+                )
+                .spawn()?;
+
+            cat.wait()?;
+
+            let status = ssh.wait()?;
+            if !status.success() {
+                return Err(remote::Error::LocalError(io::Error::other(
+                    "Failure while executing ssh command",
+                )));
+            }
+            Ok(())
+        } else {
+            Err(remote::Error::LocalError(io::Error::other(format!(
+                "Unable to cat {}",
+                compressed_file.path().display()
+            ))))
         }
-        Ok(())
     }
 
     async fn upload_folder(

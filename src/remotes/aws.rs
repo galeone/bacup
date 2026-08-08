@@ -1,4 +1,4 @@
-// Copyright 2022 Paolo Galeone <nessuno@nerdz.eu>
+// Copyright 2022-2026 Paolo Galeone <nessuno@nerdz.eu>
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,8 +13,9 @@
 // limitations under the License.
 
 use aws_credential_types::provider::SharedCredentialsProvider;
-use aws_sdk_s3::primitives::ByteStream;
-pub use aws_sdk_s3::{Client, Error};
+use aws_sdk_s3::primitives::{ByteStream, Length};
+use aws_sdk_s3::types::{CompletedMultipartUpload, CompletedPart};
+use aws_sdk_s3::Client;
 use aws_types::region::Region;
 
 use crate::config::AwsConfig;
@@ -26,6 +27,8 @@ use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 
 use async_trait::async_trait;
+
+use std::io;
 
 #[derive(Clone)]
 pub struct AwsBucket {
@@ -39,15 +42,38 @@ struct Bucket {
     bucket_name: String,
 }
 
+#[derive(Debug)]
+pub enum AwsError {
+    RemoteError(aws_sdk_s3::Error),
+    LocalError(io::Error),
+    GenericError(String),
+}
+
+impl From<io::Error> for AwsError {
+    fn from(err: io::Error) -> Self {
+        AwsError::LocalError(err)
+    }
+}
+
+impl From<aws_sdk_s3::Error> for AwsError {
+    fn from(err: aws_sdk_s3::Error) -> Self {
+        AwsError::RemoteError(err)
+    }
+}
+
 impl Bucket {
-    pub async fn list(&self, prefix: &str) -> Result<Vec<String>, Error> {
+    pub async fn list(&self, prefix: &str) -> Result<Vec<String>, AwsError> {
         let response = self
             .client
             .list_objects_v2()
             .bucket(&self.bucket_name)
             .prefix(prefix.trim_start_matches('/'))
             .send()
-            .await?;
+            .await;
+        if response.is_err() {
+            return Err(AwsError::RemoteError(response.err().unwrap().into()));
+        }
+        let response = response.unwrap();
         let mut ret: Vec<String> = vec![];
         for res in response.contents.iter() {
             for object in res {
@@ -57,31 +83,157 @@ impl Bucket {
         Ok(ret)
     }
 
-    pub async fn put_object(&self, remote_path: &str, content: Vec<u8>) -> Result<(), Error> {
-        self.client
-            .put_object()
-            .bucket(&self.bucket_name)
-            .key(remote_path.trim_start_matches('/'))
-            .body(ByteStream::from(content))
-            .send()
-            .await?;
+    pub async fn put_object(&self, remote_path: &str, path: &Path) -> Result<(), AwsError> {
+        // https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html
+        use get_file_size::GetFileSize;
+        const CHUNK_SIZE: u64 = 1024 * 1024 * 1024; // 1024 MiB
+        const MAX_CHUNKS: u64 = 10000; // 1024 * 10000 ~= 9.7 TiB max
+
+        let file_size = path.file_size().await.unwrap_or_default();
+
+        let remote_path = remote_path.trim_start_matches('/');
+
+        if file_size <= CHUNK_SIZE {
+            // Just read the file and upload to bytes.
+            // Suppose CHUNK_SIZE free memory available.
+            let mut content: Vec<u8> = vec![];
+            let mut file = File::open(path).await?;
+            file.read_to_end(&mut content).await?;
+            let response = self
+                .client
+                .put_object()
+                .bucket(&self.bucket_name)
+                .key(remote_path)
+                .body(ByteStream::from(content))
+                .send()
+                .await;
+
+            if response.is_err() {
+                return Err(AwsError::RemoteError(response.err().unwrap().into()));
+            }
+        } else {
+            // Multipart upload
+
+            let multipart_upload_res = self
+                .client
+                .create_multipart_upload()
+                .bucket(&self.bucket_name)
+                .key(remote_path)
+                .send()
+                .await;
+            if multipart_upload_res.is_err() {
+                return Err(AwsError::RemoteError(
+                    multipart_upload_res.err().unwrap().into(),
+                ));
+            }
+            let multipart_upload_res = multipart_upload_res.unwrap();
+
+            let upload_id = multipart_upload_res
+                .upload_id()
+                .ok_or(AwsError::GenericError(
+                    "Missing upload_id after CreateMultipartUpload".to_string(),
+                ))?;
+
+            let mut chunk_count = (file_size / CHUNK_SIZE) + 1;
+            let mut size_of_last_chunk = file_size % CHUNK_SIZE;
+            if size_of_last_chunk == 0 {
+                size_of_last_chunk = CHUNK_SIZE;
+                chunk_count -= 1;
+            }
+
+            if chunk_count > MAX_CHUNKS {
+                return Err(AwsError::GenericError(format!(
+                    "Too many chunks: {} > {}",
+                    chunk_count, MAX_CHUNKS
+                )));
+            }
+
+            let mut upload_parts: Vec<aws_sdk_s3::types::CompletedPart> = Vec::new();
+
+            for chunk_index in 0..chunk_count {
+                let this_chunk = if chunk_count - 1 == chunk_index {
+                    size_of_last_chunk
+                } else {
+                    CHUNK_SIZE
+                };
+                let stream = ByteStream::read_from()
+                    .path(path)
+                    .offset(chunk_index * CHUNK_SIZE)
+                    .length(Length::Exact(this_chunk))
+                    .build()
+                    .await
+                    .unwrap();
+
+                // Chunk index needs to start at 0, but part numbers start at 1.
+                let part_number = (chunk_index as i32) + 1;
+                let upload_part_res = self
+                    .client
+                    .upload_part()
+                    .key(remote_path)
+                    .bucket(&self.bucket_name)
+                    .upload_id(upload_id)
+                    .body(stream)
+                    .part_number(part_number)
+                    .send()
+                    .await;
+
+                if upload_part_res.is_err() {
+                    return Err(AwsError::RemoteError(
+                        upload_part_res.err().unwrap().into_service_error().into(),
+                    ));
+                }
+                let upload_part_res = upload_part_res.unwrap();
+
+                upload_parts.push(
+                    CompletedPart::builder()
+                        .e_tag(upload_part_res.e_tag.unwrap_or_default())
+                        .part_number(part_number)
+                        .build(),
+                );
+            }
+
+            let completed_multipart_upload =
+                CompletedMultipartUpload::builder()
+                    .set_parts(Some(upload_parts))
+                    .build();
+
+            let complete_multipart_upload_res = self
+                .client
+                .complete_multipart_upload()
+                .bucket(&self.bucket_name)
+                .key(remote_path)
+                .multipart_upload(completed_multipart_upload)
+                .upload_id(upload_id)
+                .send()
+                .await;
+            if complete_multipart_upload_res.is_err() {
+                return Err(AwsError::RemoteError(
+                    complete_multipart_upload_res.err().unwrap().into(),
+                ));
+            }
+        }
         Ok(())
     }
 
-    pub async fn delete(&self, remote_path: &str) -> Result<(), Error> {
-        self.client
+    pub async fn delete(&self, remote_path: &str) -> Result<(), AwsError> {
+        let response = self
+            .client
             .delete_object()
             .bucket(&self.bucket_name)
             .key(remote_path)
             .send()
-            .await?;
+            .await;
+
+        if response.is_err() {
+            return Err(AwsError::RemoteError(response.err().unwrap().into()));
+        }
 
         Ok(())
     }
 }
 
 impl AwsBucket {
-    pub async fn new(config: AwsConfig, bucket_name: &str) -> Result<AwsBucket, Error> {
+    pub async fn new(config: AwsConfig, bucket_name: &str) -> Result<AwsBucket, AwsError> {
         let region = Region::new(config.region);
         let mut builder =
             aws_config::defaults(aws_config::BehaviorVersion::latest()).region(region);
@@ -133,12 +285,9 @@ impl remote::Remote for AwsBucket {
     }
 
     async fn upload_file(&self, path: &Path, remote_path: &Path) -> Result<(), remote::Error> {
-        let mut content: Vec<u8> = vec![];
-        let mut file = File::open(path).await?;
-        file.read_to_end(&mut content).await?;
-
-        let remote_path = remote_path.to_str().unwrap();
-        self.bucket.put_object(remote_path, content).await?;
+        self.bucket
+            .put_object(remote_path.to_str().unwrap(), path)
+            .await?;
         Ok(())
     }
 
@@ -147,10 +296,10 @@ impl remote::Remote for AwsBucket {
         path: &Path,
         remote_path: &Path,
     ) -> Result<(), remote::Error> {
-        let compressed_bytes = self.compress_file(path).await?;
+        let compressed_file = self.compress_file(path).await?;
         let remote_path = self.remote_compressed_file_path(remote_path);
         self.bucket
-            .put_object(remote_path.to_str().unwrap(), compressed_bytes)
+            .put_object(remote_path.to_str().unwrap(), compressed_file.path())
             .await?;
         Ok(())
     }
