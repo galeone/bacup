@@ -24,9 +24,6 @@ use chrono::Utc;
 use async_compression::tokio::write::GzipEncoder;
 
 use dyn_clone::DynClone;
-
-use crate::remotes::aws::Error as AWSError;
-
 use tempfile::NamedTempFile;
 
 use tokio::fs;
@@ -34,10 +31,12 @@ use tokio::io::AsyncWriteExt;
 
 use log::info;
 
+use super::aws::AwsError;
+
 #[derive(Debug)]
 pub enum Error {
     LocalError(std::io::Error),
-    RemoteError(AWSError),
+    RemoteError(AwsError),
     CompressionError,
     NotADirectory,
 }
@@ -48,8 +47,8 @@ impl From<std::io::Error> for Error {
     }
 }
 
-impl From<AWSError> for Error {
-    fn from(error: AWSError) -> Self {
+impl From<AwsError> for Error {
+    fn from(error: AwsError) -> Self {
         Error::RemoteError(error)
     }
 }
@@ -61,7 +60,7 @@ impl fmt::Display for Error {
             Error::LocalError(error) => write!(f, "Local (IO) error: {}", error),
             Error::CompressionError => write!(f, "Unable to compress the file/folder"),
             Error::NotADirectory => write!(f, "The specified file is not a directory"),
-            Error::RemoteError(error) => write!(f, "Remote error: {}", error),
+            Error::RemoteError(error) => write!(f, "Remote error: {:?}", error),
         }
     }
 }
@@ -82,7 +81,7 @@ pub trait Remote: DynClone + Send + Sync {
         Self: Sized,
     {
         info!("Compressing folder {}", path.display());
-        let archive_path = NamedTempFile::new()?;
+        let archive_path = NamedTempFile::new_in(std::env::current_dir().unwrap())?;
 
         let file = fs::File::create(&archive_path).await?;
         let encoder = GzipEncoder::new(file);
@@ -99,26 +98,28 @@ pub trait Remote: DynClone + Send + Sync {
         Ok(archive_path)
     }
 
-    async fn compress_file(&self, path: &Path) -> Result<Vec<u8>, Error>
+    async fn compress_file(&self, path: &Path) -> Result<NamedTempFile, Error>
     where
         Self: Sized,
     {
         info!("Compressing file {}...", path.display());
-        let mut file = match fs::File::open(path).await {
+        let mut input_file = match fs::File::open(path).await {
             Ok(file) => file,
             Err(error) => return Err(Error::LocalError(error)),
         };
 
-        let mut encoder = GzipEncoder::new(Vec::new());
+        let archive_path = NamedTempFile::new_in(std::env::current_dir().unwrap())?;
+        let file = fs::File::create(&archive_path).await?;
+        let mut encoder = GzipEncoder::new(file);
 
         // Stream the file contents directly into the encoder without loading it all into RAM
-        tokio::io::copy(&mut file, &mut encoder).await?;
+        tokio::io::copy(&mut input_file, &mut encoder).await?;
 
         encoder.flush().await?;
         encoder.shutdown().await?;
 
         info!("Compression of file {} done.", path.display());
-        Ok(encoder.into_inner())
+        Ok(archive_path)
     }
 
     fn remote_archive_path(&self, remote_path: &Path) -> PathBuf {
