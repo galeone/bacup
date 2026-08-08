@@ -18,11 +18,10 @@ use crate::remotes::ssh;
 
 use tokio::fs;
 
-use std::io;
-
-use std::path::{Path, PathBuf};
-
 use std::fmt;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::string::String;
 
 use which::which;
@@ -31,7 +30,7 @@ use async_trait::async_trait;
 
 use scopeguard::defer;
 
-use std::process::Command;
+use log::info;
 
 #[derive(Debug)]
 pub enum Error {
@@ -173,6 +172,7 @@ impl remote::Remote for Git {
 
         // cp file <repo_location>/[<subdir>]
         let dest = repo.join(remote_path.strip_prefix("/").unwrap());
+        info!("Copying {} to {}", path.display(), dest.display());
         if !dest.exists() {
             fs::create_dir_all(&dest).await.unwrap();
         }
@@ -227,6 +227,11 @@ impl remote::Remote for Git {
                 dest.display()
             ))));
         }
+        info!(
+            "Successfully pushed {} to {}",
+            path.display(),
+            dest.display()
+        );
         Ok(())
     }
 
@@ -259,10 +264,13 @@ impl remote::Remote for Git {
 
         // cp file <repo_location>/[<subdir>]
         let dest = repo.join(remote_path.strip_prefix("/").unwrap());
+        info!("Copying {} file(s) to {}", paths.len(), dest.display());
         if !dest.exists() {
             fs::create_dir_all(&dest).await.unwrap();
         }
         let git_folder = std::path::Component::Normal(".git".as_ref());
+        let mut files_copied = 0;
+        let mut dirs_created = 0;
         for path in paths.iter() {
             // Skip .git and content of this folder
             if path.components().any(|x| x == git_folder) {
@@ -270,10 +278,18 @@ impl remote::Remote for Git {
             }
             if path.is_dir() {
                 fs::create_dir_all(dest.join(path.file_name().unwrap())).await?;
+                dirs_created += 1;
             } else {
                 fs::copy(path, dest.join(path.file_name().unwrap())).await?;
+                files_copied += 1;
             }
         }
+        info!(
+            "Copied {} files and {} directories to {}",
+            files_copied,
+            dirs_created,
+            dest.display()
+        );
 
         // cd <repo path>
         let cwd = std::env::current_dir()?;
@@ -324,6 +340,11 @@ impl remote::Remote for Git {
                 dest.display()
             ))));
         }
+        info!(
+            "Successfully pushed {} file(s) to {}",
+            files_copied,
+            dest.display()
+        );
         Ok(())
     }
 

@@ -93,7 +93,12 @@ impl Bucket {
         let file_size = path.file_size().await.unwrap_or_default();
 
         let remote_path = remote_path.trim_start_matches('/');
-        info!("Uploading file {} to {}", path.display(), remote_path);
+        info!(
+            "Uploading file {} ({:.2} MB) to {}",
+            path.display(),
+            file_size as f64 / 1_048_576.0,
+            remote_path
+        );
 
         if file_size <= CHUNK_SIZE {
             // Just read the file and upload to bytes.
@@ -129,6 +134,11 @@ impl Bucket {
                 ));
             }
             let multipart_upload_res = multipart_upload_res.unwrap();
+            info!(
+                "Multipart upload initiated for {} ({:.2} MB)",
+                remote_path,
+                file_size as f64 / 1_048_576.0
+            );
 
             let upload_id = multipart_upload_res
                 .upload_id()
@@ -142,6 +152,11 @@ impl Bucket {
                 size_of_last_chunk = CHUNK_SIZE;
                 chunk_count -= 1;
             }
+            info!(
+                "Will upload {} chunks ({:.2} MB each)",
+                chunk_count,
+                CHUNK_SIZE as f64 / 1_048_576.0
+            );
 
             if chunk_count > MAX_CHUNKS {
                 return Err(AwsError::GenericError(format!(
@@ -153,7 +168,18 @@ impl Bucket {
             let mut upload_parts: Vec<aws_sdk_s3::types::CompletedPart> = Vec::new();
 
             for chunk_index in 0..chunk_count {
-                info!("Uploading chunk {} of {}", chunk_index, chunk_count);
+                let this_chunk = if chunk_count - 1 == chunk_index {
+                    size_of_last_chunk
+                } else {
+                    CHUNK_SIZE
+                };
+                info!(
+                    "Uploading chunk {} of {} ({:.2} MB) to {}",
+                    chunk_index + 1,
+                    chunk_count,
+                    this_chunk as f64 / 1_048_576.0,
+                    remote_path
+                );
 
                 let this_chunk = if chunk_count - 1 == chunk_index {
                     size_of_last_chunk
@@ -195,6 +221,7 @@ impl Bucket {
                         .build(),
                 );
             }
+            info!("Uploaded all {} chunks to {}", chunk_count, remote_path);
 
             let completed_multipart_upload = CompletedMultipartUpload::builder()
                 .set_parts(Some(upload_parts))
@@ -214,11 +241,19 @@ impl Bucket {
                     complete_multipart_upload_res.err().unwrap().into(),
                 ));
             }
+            info!(
+                "Multipart upload completed successfully for {}",
+                remote_path
+            );
         }
         Ok(())
     }
 
     pub async fn delete(&self, remote_path: &str) -> Result<(), AwsError> {
+        info!(
+            "Deleting object {} from bucket {}",
+            remote_path, self.bucket_name
+        );
         let response = self
             .client
             .delete_object()
@@ -230,6 +265,10 @@ impl Bucket {
         if response.is_err() {
             return Err(AwsError::RemoteError(response.err().unwrap().into()));
         }
+        info!(
+            "Successfully deleted {} from bucket {}",
+            remote_path, self.bucket_name
+        );
 
         Ok(())
     }
@@ -341,6 +380,11 @@ impl remote::Remote for AwsBucket {
         }
 
         futures::future::join_all(futures).await;
+        info!(
+            "Successfully uploaded {} file(s) to {}",
+            tot,
+            remote_path.display()
+        );
         Ok(())
     }
 
@@ -355,8 +399,18 @@ impl remote::Remote for AwsBucket {
 
         let remote_path = self.remote_archive_path(remote_path);
         let compressed_folder = self.compress_folder(path).await?;
+        info!(
+            "Uploading compressed folder archive {} to {}",
+            compressed_folder.path().display(),
+            remote_path.display()
+        );
         self.upload_file(compressed_folder.path(), &remote_path)
             .await?;
+        info!(
+            "Successfully uploaded compressed folder {} to {}",
+            path.display(),
+            remote_path.display()
+        );
         Ok(())
     }
 }

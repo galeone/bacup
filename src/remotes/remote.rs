@@ -80,7 +80,12 @@ pub trait Remote: DynClone + Send + Sync {
     where
         Self: Sized,
     {
-        info!("Compressing folder {}", path.display());
+        let folder_size = fs::metadata(path).await?.len();
+        info!(
+            "Compressing folder {} ({:.2} MB) to archive...",
+            path.display(),
+            folder_size as f64 / 1_048_576.0
+        );
         let archive_path = NamedTempFile::new_in(std::env::current_dir().unwrap())?;
 
         let file = fs::File::create(&archive_path).await?;
@@ -89,7 +94,9 @@ pub trait Remote: DynClone + Send + Sync {
         let mut builder = tokio_tar::Builder::new(encoder);
         builder
             .append_dir_all(path.file_name().unwrap(), path)
-            .await?;
+            .await
+            .unwrap();
+        info!("Added items to archive");
 
         let mut encoder = builder.into_inner().await?;
         encoder.flush().await?;
@@ -102,7 +109,12 @@ pub trait Remote: DynClone + Send + Sync {
     where
         Self: Sized,
     {
-        info!("Compressing file {}...", path.display());
+        let file_size = fs::metadata(path).await?.len();
+        info!(
+            "Compressing file {} ({:.2} MB) to archive...",
+            path.display(),
+            file_size as f64 / 1_048_576.0
+        );
         let mut input_file = match fs::File::open(path).await {
             Ok(file) => file,
             Err(error) => return Err(Error::LocalError(error)),
@@ -113,7 +125,13 @@ pub trait Remote: DynClone + Send + Sync {
         let mut encoder = GzipEncoder::new(file);
 
         // Stream the file contents directly into the encoder without loading it all into RAM
-        tokio::io::copy(&mut input_file, &mut encoder).await?;
+        let bytes_copied = tokio::io::copy(&mut input_file, &mut encoder).await?;
+        info!(
+            "Compressed {} bytes to {} bytes ({:.2} MB)",
+            file_size,
+            bytes_copied,
+            bytes_copied as f64 / 1_048_576.0
+        );
 
         encoder.flush().await?;
         encoder.shutdown().await?;

@@ -15,12 +15,13 @@
 use crate::config::LocalhostConfig;
 use crate::remotes::remote;
 
+use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 
-use std::fmt;
+use log::info;
 
 #[derive(Debug, PartialEq)]
 pub enum Error {
@@ -134,10 +135,16 @@ impl remote::Remote for Localhost {
         };
 
         let dest = self.path.join(remote_path.parent().unwrap());
+        info!("Copying file {} to {}", path.display(), dest.display());
         if !dest.exists() {
             fs::create_dir_all(&dest).await?;
         }
         fs::copy(path, dest.join(remote_path.file_name().unwrap())).await?;
+        info!(
+            "Successfully uploaded {} to {}",
+            path.display(),
+            dest.display()
+        );
         Ok(())
     }
 
@@ -195,6 +202,12 @@ impl remote::Remote for Localhost {
             PathBuf::from(remote_path)
         };
 
+        info!(
+            "Uploading {} file(s) to {}",
+            paths.len(),
+            remote_path.display()
+        );
+
         for path in paths.iter() {
             if path.is_file() {
                 let dest = self
@@ -204,10 +217,16 @@ impl remote::Remote for Localhost {
                 if !parent.exists() {
                     fs::create_dir_all(parent).await?;
                 }
+                info!("Uploading {} to {}", path.display(), dest.display());
                 fs::copy(path, dest).await?;
             }
         }
 
+        info!(
+            "Successfully uploaded {} file(s) to {}",
+            paths.len(),
+            remote_path.display()
+        );
         Ok(())
     }
 
