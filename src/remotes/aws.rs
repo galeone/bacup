@@ -28,6 +28,7 @@ use tokio::io::AsyncReadExt;
 
 use async_trait::async_trait;
 
+use log::info;
 use std::io;
 
 #[derive(Clone)]
@@ -92,6 +93,7 @@ impl Bucket {
         let file_size = path.file_size().await.unwrap_or_default();
 
         let remote_path = remote_path.trim_start_matches('/');
+        info!("Uploading file {} to {}", path.display(), remote_path);
 
         if file_size <= CHUNK_SIZE {
             // Just read the file and upload to bytes.
@@ -151,6 +153,8 @@ impl Bucket {
             let mut upload_parts: Vec<aws_sdk_s3::types::CompletedPart> = Vec::new();
 
             for chunk_index in 0..chunk_count {
+                info!("Uploading chunk {} of {}", chunk_index, chunk_count);
+
                 let this_chunk = if chunk_count - 1 == chunk_index {
                     size_of_last_chunk
                 } else {
