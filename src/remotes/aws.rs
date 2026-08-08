@@ -192,10 +192,9 @@ impl Bucket {
                 );
             }
 
-            let completed_multipart_upload =
-                CompletedMultipartUpload::builder()
-                    .set_parts(Some(upload_parts))
-                    .build();
+            let completed_multipart_upload = CompletedMultipartUpload::builder()
+                .set_parts(Some(upload_parts))
+                .build();
 
             let complete_multipart_upload_res = self
                 .client
