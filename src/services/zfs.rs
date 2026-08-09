@@ -165,7 +165,8 @@ impl Service for Zfs {
         }
 
         let dest_file = File::create(&dest).await?;
-
+        // TODO: send dry-run, get the "total estimated size is XXX$unit"
+        // convert to bytes, and use has_enough_space to check.
         let send_args = vec![
             String::from("send"),
             String::from("-R"),

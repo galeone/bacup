@@ -31,11 +31,13 @@ use tokio::io::AsyncWriteExt;
 
 use log::info;
 
+use super::super::disks;
 use super::aws::AwsError;
 
 #[derive(Debug)]
 pub enum Error {
     LocalError(std::io::Error),
+    StorageError(disks::Error),
     RemoteError(AwsError),
     CompressionError,
     NotADirectory,
@@ -44,6 +46,12 @@ pub enum Error {
 impl From<std::io::Error> for Error {
     fn from(error: std::io::Error) -> Self {
         Error::LocalError(error)
+    }
+}
+
+impl From<disks::Error> for Error {
+    fn from(error: disks::Error) -> Self {
+        Error::StorageError(error)
     }
 }
 
@@ -61,6 +69,7 @@ impl fmt::Display for Error {
             Error::CompressionError => write!(f, "Unable to compress the file/folder"),
             Error::NotADirectory => write!(f, "The specified file is not a directory"),
             Error::RemoteError(error) => write!(f, "Remote error: {:?}", error),
+            Error::StorageError(error) => write!(f, "Storagee error: {:?}", error),
         }
     }
 }
@@ -87,6 +96,18 @@ pub trait Remote: DynClone + Send + Sync {
             folder_size as f64 / 1_048_576.0
         );
         let archive_path = NamedTempFile::new_in(std::env::current_dir().unwrap())?;
+
+        match disks::has_enough_space(archive_path.path(), folder_size).await {
+            Ok(enough_space) => {
+                if !enough_space {
+                    return Err(Error::LocalError(std::io::Error::other(format!(
+                        "Not enough space to create {}",
+                        archive_path.path().display()
+                    ))));
+                }
+            }
+            Err(error) => return Err(error.into()),
+        }
 
         let file = fs::File::create(&archive_path).await?;
         let encoder = GzipEncoder::new(file);
@@ -121,6 +142,19 @@ pub trait Remote: DynClone + Send + Sync {
         };
 
         let archive_path = NamedTempFile::new_in(std::env::current_dir().unwrap())?;
+
+        match disks::has_enough_space(archive_path.path(), file_size).await {
+            Ok(enough_space) => {
+                if !enough_space {
+                    return Err(Error::LocalError(std::io::Error::other(format!(
+                        "Not enough space to create {}",
+                        archive_path.path().display()
+                    ))));
+                }
+            }
+            Err(error) => return Err(error.into()),
+        }
+
         let file = fs::File::create(&archive_path).await?;
         let mut encoder = GzipEncoder::new(file);
 
