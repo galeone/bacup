@@ -89,7 +89,7 @@ pub trait Remote: DynClone + Send + Sync {
     where
         Self: Sized,
     {
-        let folder_size = fs::metadata(path).await?.len();
+        let folder_size = disks::calculate_folder_size(path).await?;
         info!(
             "Compressing folder {} ({:.2} MB) to archive...",
             path.display(),

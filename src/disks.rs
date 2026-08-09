@@ -18,9 +18,34 @@ use std::path::Path;
 use sysinfo::Disks;
 use tokio::fs;
 
+use crate::disks::Error::LocalError;
+
 #[derive(Debug)]
 pub enum Error {
     LocalError(std::io::Error),
+}
+
+impl From<std::io::Error> for Error {
+    fn from(error: std::io::Error) -> Self {
+        LocalError(error)
+    }
+}
+
+pub async fn calculate_folder_size(path: &Path) -> Result<u64, Error> {
+    let mut total_size = 0u64;
+
+    let mut entries = fs::read_dir(path).await?;
+    while let Some(entry_result) = entries.next_entry().await? {
+        let metadata = fs::metadata(entry_result.path()).await?;
+
+        if metadata.is_file() {
+            total_size += metadata.len();
+        } else if metadata.is_dir() {
+            total_size += Box::pin(calculate_folder_size(&entry_result.path())).await?;
+        }
+    }
+
+    Ok(total_size)
 }
 
 pub async fn has_enough_space(destination_file: &Path, required_space: u64) -> Result<bool, Error> {
