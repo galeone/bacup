@@ -86,3 +86,88 @@ pub async fn has_enough_space(destination_file: &Path, required_space: u64) -> R
         Ok(required_space < *available_space)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn test_calculate_folder_size_empty_dir() {
+        let dir = tempdir().unwrap();
+        let size = calculate_folder_size(dir.path()).await.unwrap();
+        assert_eq!(size, 0);
+    }
+
+    #[tokio::test]
+    async fn test_calculate_folder_size_single_file() {
+        let dir = tempdir().unwrap();
+        let test_file = dir.path().join("test.txt");
+        fs::write(&test_file, "Hello, World!").unwrap();
+        let size = calculate_folder_size(dir.path()).await.unwrap();
+        assert_eq!(size, 13); // "Hello, World!".len()
+    }
+
+    #[tokio::test]
+    async fn test_calculate_folder_size_nested() {
+        let dir = tempdir().unwrap();
+        let subdir = dir.path().join("subdir");
+        fs::create_dir(&subdir).unwrap();
+
+        let file1 = dir.path().join("file1.txt");
+        let c1 = "Content 1";
+        fs::write(&file1, c1).unwrap();
+
+        let file2 = subdir.join("file2.txt");
+        let c2 = "Content 2 more content";
+        fs::write(&file2, c2).unwrap();
+
+        let size = calculate_folder_size(dir.path()).await.unwrap();
+        assert_eq!(size, (c1.len() + c2.len()) as u64); // "Content 1".len() + "Content 2 more content".len()
+    }
+
+    #[tokio::test]
+    async fn test_calculate_folder_size_subdirectory() {
+        let dir = tempdir().unwrap();
+        let subdir = dir.path().join("subdir");
+        fs::create_dir(&subdir).unwrap();
+
+        let file = subdir.join("nested.txt");
+        let c1 = "Nested content";
+        fs::write(&file, c1).unwrap();
+
+        let size = calculate_folder_size(dir.path()).await.unwrap();
+        assert_eq!(size, c1.len() as u64); // "Nested content".len()
+    }
+
+    #[tokio::test]
+    async fn test_has_enough_space_sufficient_space() {
+        let dir = tempdir().unwrap();
+        let test_file = dir.path().join("test.txt");
+        fs::write(&test_file, "test").unwrap();
+
+        let result = has_enough_space(&test_file, 100).await.unwrap();
+        assert!(result, "Should have enough space");
+    }
+
+    #[tokio::test]
+    async fn test_has_enough_space_insufficient_space() {
+        let dir = tempdir().unwrap();
+        let test_file = dir.path().join("test.txt");
+        fs::write(&test_file, "test").unwrap();
+
+        // Use a very large number to test the boundary condition
+        let result = has_enough_space(&test_file, u64::MAX / 2).await.unwrap();
+        assert!(!result, "Should not have enough space");
+    }
+
+    #[tokio::test]
+    async fn test_has_enough_space_parent_not_exists() {
+        let test_file = PathBuf::from("/nonexistent/path/test.txt");
+        let result = has_enough_space(&test_file, 100).await;
+        assert!(result.is_err());
+    }
+}
+
