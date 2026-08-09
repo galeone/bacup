@@ -1,4 +1,4 @@
-// Copyright 2022 Paolo Galeone <nessuno@nerdz.eu>
+// Copyright 2022-2026 Paolo Galeone <nessuno@nerdz.eu>
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,12 +15,13 @@
 use crate::config::LocalhostConfig;
 use crate::remotes::remote;
 
+use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 
-use std::fmt;
+use log::info;
 
 #[derive(Debug, PartialEq)]
 pub enum Error {
@@ -134,10 +135,16 @@ impl remote::Remote for Localhost {
         };
 
         let dest = self.path.join(remote_path.parent().unwrap());
+        info!("Copying file {} to {}", path.display(), dest.display());
         if !dest.exists() {
             fs::create_dir_all(&dest).await?;
         }
         fs::copy(path, dest.join(remote_path.file_name().unwrap())).await?;
+        info!(
+            "Successfully uploaded {} to {}",
+            path.display(),
+            dest.display()
+        );
         Ok(())
     }
 
@@ -147,9 +154,8 @@ impl remote::Remote for Localhost {
         remote_path: &Path,
     ) -> Result<(), remote::Error> {
         use tokio::fs;
-        use tokio::io::AsyncWriteExt;
 
-        let compressed_bytes = self.compress_file(path).await?;
+        let compressed_file = self.compress_file(path).await?;
         let remote_path = if remote_path.is_absolute() {
             remote_path.strip_prefix("/").unwrap()
         } else {
@@ -163,8 +169,7 @@ impl remote::Remote for Localhost {
             self.remote_compressed_file_path(&PathBuf::from(remote_path.file_name().unwrap())),
         );
 
-        let mut buffer = fs::File::create(remote_path).await?;
-        buffer.write_all(&compressed_bytes).await?;
+        fs::copy(&compressed_file, remote_path).await?;
         Ok(())
     }
 
@@ -197,6 +202,12 @@ impl remote::Remote for Localhost {
             PathBuf::from(remote_path)
         };
 
+        info!(
+            "Uploading {} file(s) to {}",
+            paths.len(),
+            remote_path.display()
+        );
+
         for path in paths.iter() {
             if path.is_file() {
                 let dest = self
@@ -206,10 +217,16 @@ impl remote::Remote for Localhost {
                 if !parent.exists() {
                     fs::create_dir_all(parent).await?;
                 }
+                info!("Uploading {} to {}", path.display(), dest.display());
                 fs::copy(path, dest).await?;
             }
         }
 
+        info!(
+            "Successfully uploaded {} file(s) to {}",
+            paths.len(),
+            remote_path.display()
+        );
         Ok(())
     }
 

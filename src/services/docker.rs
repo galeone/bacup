@@ -1,4 +1,4 @@
-// Copyright 2022 Paolo Galeone <nessuno@nerdz.eu>
+// Copyright 2022-2026 Paolo Galeone <nessuno@nerdz.eu>
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -123,14 +123,24 @@ impl Service for Docker {
 
         let dest_file = File::create(&dest).await?;
 
-        match Command::new(&self.cmd)
+        let status = Command::new(&self.cmd)
             .args(&self.args)
             .stdout(Stdio::from(dest_file.try_into_std().unwrap()))
             .status()
-            .await
-        {
-            Ok(_) => Ok(Dump { path: Some(dest) }),
-            Err(error) => Err(Error::RuntimeError(error).into()),
+            .await;
+        if let Err(error) = status {
+            return Err(Error::RuntimeError(error).into());
+        }
+        let status = status?;
+        match status.success() {
+            true => Ok(Dump { path: Some(dest) }),
+            false => Err(Error::RuntimeError(io::Error::other(format!(
+                "{} {:?} failed with exit code {}",
+                self.cmd.display(),
+                self.args,
+                status.code().unwrap()
+            )))
+            .into()),
         }
     }
 }

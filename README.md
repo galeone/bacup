@@ -80,6 +80,14 @@ When configuring the backups, the field **when** accepts configuration strings i
     container_name = "docker_postgres_1"
     command = "pg_dumpall -c -U postgres" # dump to stdout always
 
+[zfs]
+    [zfs.root]
+    snapshot_name = "root-fs"
+    dataset = "zroot"
+    [zfs.storage]
+    snapshot_name = "storage-fs"
+    dataset = "storage"
+
 # mapping services to remote
 [backup]
     # Compress the DB dump and upload it to aws
@@ -162,9 +170,10 @@ sudo cp misc/systemd/bacup@.service /usr/lib/systemd/system/
 then, the service can be enabled/started in the usual systemd way:
 
 ```
-sudo systemctl start bacup@$USER.service
-sudo systemctl enable bacup@$USER.service
+sudo systemctl enable --now bacup@$USER.service
 ```
+
+**Note**: the working directory is important if you plan to back-up big files. The files are created in that directory before being uploaded, so set it to a location where you have the write right and enough space.
 
 ## Remote configuration
 

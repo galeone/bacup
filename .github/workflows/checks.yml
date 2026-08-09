@@ -8,17 +8,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v2
+        uses: actions/checkout@v7
 
-      - name: Install stable toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
-          override: true
+      - name: Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1.17
 
       - name: Run cargo check
-        uses: actions-rs/cargo@v1
+        uses: clechasseur/rs-cargo@v5.0.6
         with:
           command: check
 
@@ -27,18 +23,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v2
+        uses: actions/checkout@v7
 
-      - name: Install stable toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
-          override: true
+      - name: Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1.17
 
       - name: Run cargo test
-        uses: actions-rs/cargo@v1
-        continue-on-error: true  
+        uses: clechasseur/rs-cargo@v5.0.6
         with:
           command: test
 
@@ -47,24 +38,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v2
+        uses: actions/checkout@v7
 
-      - name: Install stable toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
-          override: true
-          components: rustfmt, clippy
+      - name: Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1.17
 
       - name: Run cargo fmt
-        uses: actions-rs/cargo@v1
+        uses: clechasseur/rs-cargo@v5.0.6
         with:
           command: fmt
           args: --all -- --check
 
       - name: Run cargo clippy
-        uses: actions-rs/cargo@v1
+        uses: clechasseur/rs-cargo@v5.0.6
         with:
           command: clippy
           args: -- -D warnings

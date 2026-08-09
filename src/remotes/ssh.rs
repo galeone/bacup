@@ -1,4 +1,4 @@
-// Copyright 2022 Paolo Galeone <nessuno@nerdz.eu>
+// Copyright 2022-2026 Paolo Galeone <nessuno@nerdz.eu>
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::fmt;
 use std::string::String;
 
-use log::warn;
+use log::{info, warn};
 
 use tokio::fs;
 use tokio::fs::File;
@@ -239,8 +239,15 @@ impl remote::Remote for Ssh {
         // Read file
         let mut content: Vec<u8> = vec![];
         let mut file = File::open(path).await?;
+        let file_size = content.len();
         file.read_to_end(&mut content).await?;
         let remote_path = remote_path.to_str().unwrap();
+        info!(
+            "Uploading {} bytes from {} to {}",
+            file_size,
+            path.display(),
+            remote_path
+        );
 
         // cat file | ssh -Pxxx user@host "cat > file"
         let mut ssh = Command::new(&self.ssh_cmd)
@@ -279,6 +286,12 @@ impl remote::Remote for Ssh {
             );
             return Err(remote::Error::LocalError(io::Error::other(message)));
         }
+        info!(
+            "Successfully uploaded {} bytes from {} to {}",
+            file_size,
+            path.display(),
+            remote_path
+        );
         Ok(())
     }
 
@@ -288,27 +301,52 @@ impl remote::Remote for Ssh {
         remote_path: &Path,
     ) -> Result<(), remote::Error> {
         // Read and compress
-        let compressed_bytes = self.compress_file(path).await?;
+        let compressed_file = self.compress_file(path).await?;
         let remote_path = self.remote_compressed_file_path(remote_path);
+        info!(
+            "Uploading compressed file {} to {}",
+            compressed_file.path().display(),
+            remote_path.display()
+        );
 
         // cat file | ssh -Pxxx user@host "cat > file"
-        let mut ssh = Command::new(&self.ssh_cmd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .args(
-                self.ssh_args
-                    .iter()
-                    .chain(once(&format!("cat > {} ", remote_path.display()))),
-            )
+
+        let mut cat = Command::new("cat")
+            .arg(format!("{}", compressed_file.path().display()))
+            .stdout(Stdio::piped())
             .spawn()?;
-        ssh.stdin.as_mut().unwrap().write_all(&compressed_bytes)?;
-        let status = ssh.wait()?;
-        if !status.success() {
-            return Err(remote::Error::LocalError(io::Error::other(
-                "Failure while executing ssh command",
-            )));
+
+        if let Some(cat_output) = cat.stdout.take() {
+            let mut ssh = Command::new(&self.ssh_cmd)
+                .stdin(cat_output)
+                .stdout(Stdio::null())
+                .args(
+                    self.ssh_args
+                        .iter()
+                        .chain(once(&format!("cat > {} ", remote_path.display()))),
+                )
+                .spawn()?;
+
+            cat.wait()?;
+
+            let status = ssh.wait()?;
+            if !status.success() {
+                return Err(remote::Error::LocalError(io::Error::other(
+                    "Failure while executing ssh command",
+                )));
+            }
+            info!(
+                "Successfully uploaded compressed file {} to {}",
+                compressed_file.path().display(),
+                remote_path.display()
+            );
+            Ok(())
+        } else {
+            Err(remote::Error::LocalError(io::Error::other(format!(
+                "Unable to cat {}",
+                compressed_file.path().display()
+            ))))
         }
-        Ok(())
     }
 
     async fn upload_folder(
@@ -339,6 +377,13 @@ impl remote::Remote for Ssh {
         // delete is used to remove from remote and keep it in sync with local
         let args = vec!["-az", "-e", &ssh_port_opt, src, &dest, "--delete"];
 
+        info!(
+            "Synchronizing {} file(s) from {} to {}",
+            paths.len(),
+            src,
+            dest
+        );
+
         let status = Command::new(&self.rsync_cmd)
             .stderr(Stdio::null())
             .stdout(Stdio::null())
@@ -351,6 +396,12 @@ impl remote::Remote for Ssh {
             )));
         }
 
+        info!(
+            "Successfully synchronized {} file(s) from {} to {}",
+            paths.len(),
+            src,
+            dest
+        );
         Ok(())
     }
 
@@ -365,6 +416,11 @@ impl remote::Remote for Ssh {
 
         let remote_path = self.remote_archive_path(remote_path);
         let compressed_folder = self.compress_folder(path).await?;
+        info!(
+            "Uploading compressed folder archive {} to {}",
+            compressed_folder.path().display(),
+            remote_path.display()
+        );
 
         self.upload_file(compressed_folder.path(), &remote_path)
             .await

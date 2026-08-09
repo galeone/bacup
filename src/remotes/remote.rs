@@ -24,20 +24,21 @@ use chrono::Utc;
 use async_compression::tokio::write::GzipEncoder;
 
 use dyn_clone::DynClone;
-
-use crate::remotes::aws::Error as AWSError;
-
 use tempfile::NamedTempFile;
 
 use tokio::fs;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 
 use log::info;
+
+use super::super::disks;
+use super::aws::AwsError;
 
 #[derive(Debug)]
 pub enum Error {
     LocalError(std::io::Error),
-    RemoteError(AWSError),
+    StorageError(disks::Error),
+    RemoteError(AwsError),
     CompressionError,
     NotADirectory,
 }
@@ -48,8 +49,14 @@ impl From<std::io::Error> for Error {
     }
 }
 
-impl From<AWSError> for Error {
-    fn from(error: AWSError) -> Self {
+impl From<disks::Error> for Error {
+    fn from(error: disks::Error) -> Self {
+        Error::StorageError(error)
+    }
+}
+
+impl From<AwsError> for Error {
+    fn from(error: AwsError) -> Self {
         Error::RemoteError(error)
     }
 }
@@ -61,7 +68,8 @@ impl fmt::Display for Error {
             Error::LocalError(error) => write!(f, "Local (IO) error: {}", error),
             Error::CompressionError => write!(f, "Unable to compress the file/folder"),
             Error::NotADirectory => write!(f, "The specified file is not a directory"),
-            Error::RemoteError(error) => write!(f, "Remote error: {}", error),
+            Error::RemoteError(error) => write!(f, "Remote error: {:?}", error),
+            Error::StorageError(error) => write!(f, "Storagee error: {:?}", error),
         }
     }
 }
@@ -81,8 +89,25 @@ pub trait Remote: DynClone + Send + Sync {
     where
         Self: Sized,
     {
-        info!("Compressing folder {}", path.display());
-        let archive_path = NamedTempFile::new()?;
+        let folder_size = disks::calculate_folder_size(path).await?;
+        info!(
+            "Compressing folder {} ({:.2} MB) to archive...",
+            path.display(),
+            folder_size as f64 / 1_048_576.0
+        );
+        let archive_path = NamedTempFile::new_in(std::env::current_dir().unwrap())?;
+
+        match disks::has_enough_space(archive_path.path(), folder_size).await {
+            Ok(enough_space) => {
+                if !enough_space {
+                    return Err(Error::LocalError(std::io::Error::other(format!(
+                        "Not enough space to create {}",
+                        archive_path.path().display()
+                    ))));
+                }
+            }
+            Err(error) => return Err(error.into()),
+        }
 
         let file = fs::File::create(&archive_path).await?;
         let encoder = GzipEncoder::new(file);
@@ -90,7 +115,9 @@ pub trait Remote: DynClone + Send + Sync {
         let mut builder = tokio_tar::Builder::new(encoder);
         builder
             .append_dir_all(path.file_name().unwrap(), path)
-            .await?;
+            .await
+            .unwrap();
+        info!("Added items to archive");
 
         let mut encoder = builder.into_inner().await?;
         encoder.flush().await?;
@@ -99,26 +126,52 @@ pub trait Remote: DynClone + Send + Sync {
         Ok(archive_path)
     }
 
-    async fn compress_file(&self, path: &Path) -> Result<Vec<u8>, Error>
+    async fn compress_file(&self, path: &Path) -> Result<NamedTempFile, Error>
     where
         Self: Sized,
     {
-        info!("Compressing file {}...", path.display());
-        let mut content: Vec<u8> = vec![];
-        let mut file = match fs::File::open(path).await {
+        let file_size = fs::metadata(path).await?.len();
+        info!(
+            "Compressing file {} ({:.2} MB) to archive...",
+            path.display(),
+            file_size as f64 / 1_048_576.0
+        );
+        let mut input_file = match fs::File::open(path).await {
             Ok(file) => file,
             Err(error) => return Err(Error::LocalError(error)),
         };
 
-        file.read_to_end(&mut content).await?;
+        let archive_path = NamedTempFile::new_in(std::env::current_dir().unwrap())?;
 
-        let mut e = GzipEncoder::new(Vec::new());
-        e.write_all(&content).await?;
-        e.flush().await?;
-        e.shutdown().await?;
+        match disks::has_enough_space(archive_path.path(), file_size).await {
+            Ok(enough_space) => {
+                if !enough_space {
+                    return Err(Error::LocalError(std::io::Error::other(format!(
+                        "Not enough space to create {}",
+                        archive_path.path().display()
+                    ))));
+                }
+            }
+            Err(error) => return Err(error.into()),
+        }
+
+        let file = fs::File::create(&archive_path).await?;
+        let mut encoder = GzipEncoder::new(file);
+
+        // Stream the file contents directly into the encoder without loading it all into RAM
+        let bytes_copied = tokio::io::copy(&mut input_file, &mut encoder).await?;
+        info!(
+            "Compressed {} bytes to {} bytes ({:.2} MB)",
+            file_size,
+            bytes_copied,
+            bytes_copied as f64 / 1_048_576.0
+        );
+
+        encoder.flush().await?;
+        encoder.shutdown().await?;
 
         info!("Compression of file {} done.", path.display());
-        Ok(e.into_inner())
+        Ok(archive_path)
     }
 
     fn remote_archive_path(&self, remote_path: &Path) -> PathBuf {

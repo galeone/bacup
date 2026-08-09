@@ -1,4 +1,4 @@
-// Copyright 2022 Paolo Galeone <nessuno@nerdz.eu>
+// Copyright 2022-2026 Paolo Galeone <nessuno@nerdz.eu>
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -38,6 +38,9 @@ impl Drop for Dump {
 
 #[async_trait]
 pub trait Service: DynClone {
+    // dump executes the dump command and creates the file/files to backup. Those files will be listed by list().
     async fn dump(&self) -> Result<Dump, Box<dyn std::error::Error>>;
+
+    // list returns the list of the paths that should be uploaded to the Remote - those are created by dump().
     async fn list(&self) -> Vec<PathBuf>;
 }

@@ -1,4 +1,4 @@
-// Copyright 2022 Paolo Galeone <nessuno@nerdz.eu>
+// Copyright 2022-2026 Paolo Galeone <nessuno@nerdz.eu>
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -67,6 +67,12 @@ pub struct DockerConfig {
 }
 
 #[derive(Serialize, Deserialize)]
+pub struct ZfsConfig {
+    pub dataset: String,
+    pub snapshot_name: String,
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct FoldersConfig {
     pub pattern: String,
 }
@@ -98,6 +104,7 @@ pub struct Config {
     pub folders: Option<HashMap<String, FoldersConfig>>,
     pub postgres: Option<HashMap<String, PostgreSqlConfig>>,
     pub docker: Option<HashMap<String, DockerConfig>>,
+    pub zfs: Option<HashMap<String, ZfsConfig>>,
     // mapping
     pub backup: HashMap<String, BackupConfig>,
 }

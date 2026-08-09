@@ -1,4 +1,4 @@
-// Copyright 2022 Paolo Galeone <nessuno@nerdz.eu>
+// Copyright 2022-2026 Paolo Galeone <nessuno@nerdz.eu>
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -34,6 +34,7 @@ use bacup::services::folders::Folder;
 use bacup::services::postgresql::PostgreSql;
 use bacup::services::service::Service;
 
+use bacup::services::zfs::Zfs;
 use log::*;
 use structopt::StructOpt;
 
@@ -168,6 +169,19 @@ async fn main() -> Result<(), i32> {
                 services.insert(
                     key,
                     Box::new(Docker::new(instance_config, &service_name).await.unwrap()),
+                );
+            }
+        }
+        None => warn!("No Docker to backup."),
+    }
+
+    match config.zfs {
+        Some(zfs) => {
+            for (service_name, instance_config) in zfs {
+                let key = format!("zfs.{}", service_name);
+                services.insert(
+                    key,
+                    Box::new(Zfs::new(instance_config, &service_name).await.unwrap()),
                 );
             }
         }
