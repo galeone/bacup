@@ -28,7 +28,7 @@ use tokio::io::AsyncReadExt;
 
 use async_trait::async_trait;
 
-use log::info;
+use log::{info, warn};
 use std::io;
 
 #[derive(Clone)]
@@ -159,6 +159,7 @@ impl Bucket {
             );
 
             if chunk_count > MAX_CHUNKS {
+                self.abort_multipart_upload(remote_path, upload_id).await;
                 return Err(AwsError::GenericError(format!(
                     "Too many chunks: {} > {}",
                     chunk_count, MAX_CHUNKS
@@ -208,6 +209,7 @@ impl Bucket {
                     .await;
 
                 if upload_part_res.is_err() {
+                    self.abort_multipart_upload(remote_path, upload_id).await;
                     return Err(AwsError::RemoteError(
                         upload_part_res.err().unwrap().into_service_error().into(),
                     ));
@@ -237,6 +239,7 @@ impl Bucket {
                 .send()
                 .await;
             if complete_multipart_upload_res.is_err() {
+                self.abort_multipart_upload(remote_path, upload_id).await;
                 return Err(AwsError::RemoteError(
                     complete_multipart_upload_res.err().unwrap().into(),
                 ));
@@ -247,6 +250,26 @@ impl Bucket {
             );
         }
         Ok(())
+    }
+
+    /// Best-effort abort of a multipart upload, so failed uploads don't
+    /// leave incomplete parts in the bucket.
+    async fn abort_multipart_upload(&self, remote_path: &str, upload_id: &str) {
+        match self
+            .client
+            .abort_multipart_upload()
+            .bucket(&self.bucket_name)
+            .key(remote_path)
+            .upload_id(upload_id)
+            .send()
+            .await
+        {
+            Ok(_) => info!("Aborted multipart upload for {}", remote_path),
+            Err(err) => warn!(
+                "Failed to abort multipart upload for {}: {}",
+                remote_path, err
+            ),
+        }
     }
 
     pub async fn delete(&self, remote_path: &str) -> Result<(), AwsError> {

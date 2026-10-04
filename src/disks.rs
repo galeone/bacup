@@ -35,13 +35,16 @@ pub async fn calculate_folder_size(path: &Path) -> Result<u64, Error> {
     let mut total_size = 0u64;
 
     let mut entries = fs::read_dir(path).await?;
-    while let Some(entry_result) = entries.next_entry().await? {
-        let metadata = fs::metadata(entry_result.path()).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+        // Use symlink_metadata (which does not follow symlinks) to avoid
+        // symlink cycles and double-counting of files reachable through links.
+        let metadata = fs::symlink_metadata(&path).await?;
 
         if metadata.is_file() {
             total_size += metadata.len();
         } else if metadata.is_dir() {
-            total_size += Box::pin(calculate_folder_size(&entry_result.path())).await?;
+            total_size += Box::pin(calculate_folder_size(&path)).await?;
         }
     }
 

@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::string::String;
 use std::vec::Vec;
 
-use log::info;
+use log::{info, warn};
 
 use crate::config::ZfsConfig;
 use crate::services::service::{Dump, Service};
@@ -80,21 +80,41 @@ impl Zfs {
         let output = output.unwrap();
         let status = output.status;
         if !status.success() {
-            return Err(Error::ZfsError(format!("Failed to verify zfs user permissions. Please run `zfs allow $USER hold,send,snapshot {}`", config.dataset)));
+            return Err(Error::ZfsError(format!("Failed to verify zfs user permissions. Please run `zfs allow $USER destroy,hold,send,snapshot {}`", config.dataset)));
         }
 
         let stdout = String::from_utf8(output.stdout).unwrap();
         if stdout.is_empty() {
-            return Err(Error::ZfsError(format!("Failed to verify zfs user permissions. Please run `zfs allow $USER hold,send,snapshot {}", config.dataset)));
+            return Err(Error::ZfsError(format!("Failed to verify zfs user permissions. Please run `zfs allow $USER destroy,hold,send,snapshot {}", config.dataset)));
         }
 
-        // Check if the string user $USER hold,send,snapshot is in the stdout
-        let needle = format!("user {} hold,send,snapshot", std::env::var("USER").unwrap());
-        if !stdout.contains(&needle) {
-            return Err(Error::ZfsError(format!(
-                "\"{}\" not found in output of `zfs allow {}`",
-                needle, config.dataset
-            )));
+        // Check that the current user is in the allow list for snapshot, send and
+        // destroy (destroy is needed to clean up old snapshots created by bacup).
+        let user = std::env::var("USER").map_err(|_| {
+            Error::ZfsError(
+                "USER environment variable is not set, cannot verify zfs permissions".to_string(),
+            )
+        })?;
+        let required = ["destroy", "hold", "send", "snapshot"];
+        let prefix = format!("user {} ", user);
+        let allowed = stdout
+            .lines()
+            .find(|line| line.trim_start().starts_with(&prefix))
+            .map(|line| {
+                line.trim_start()
+                    .trim_start_matches(&prefix)
+                    .split(',')
+                    .map(str::trim)
+                    .collect::<Vec<&str>>()
+            });
+        match allowed {
+            Some(permissions) if required.iter().all(|perm| permissions.contains(perm)) => {}
+            _ => {
+                return Err(Error::ZfsError(format!(
+                    "user \"{}\" with permissions {:?} not found in output of `zfs allow {}`. Please run `zfs allow {} destroy,hold,send,snapshot {}`",
+                    user, required, config.dataset, user, config.dataset
+                )));
+            }
         }
 
         // If here, the current user is in the allow list for zfs send and snapshot
@@ -142,7 +162,7 @@ impl Service for Zfs {
         // Step 1, execute the checkpoint (atomic, immediate action)
         info!("Executing: {} {:?}", self.cmd.display(), args);
         let status = Command::new(&self.cmd)
-            .args(args)
+            .args(&args)
             .stdout(Stdio::null())
             .status()
             .await;
@@ -191,7 +211,11 @@ impl Service for Zfs {
         }
         let status = status?;
         match status.success() {
-            true => Ok(Dump { path: Some(dest) }),
+            true => {
+                info!("ZFS checkpoint completed successfully");
+                destroy_old_snapshots(&args).await;
+                Ok(Dump { path: Some(dest) })
+            }
             false => Err(Error::RuntimeError(io::Error::other(format!(
                 "{} {:?} failed with exit code {}",
                 self.cmd.display(),
@@ -200,5 +224,75 @@ impl Service for Zfs {
             )))
             .into()),
         }
+    }
+}
+
+/// Destroy all old snapshots matching the checkpoint name used by bacup,
+/// except the one just created, so they don't accumulate indefinitely.
+///
+/// `args` is the zfs send arg list; its last element is the checkpoint
+/// name, e.g. `dataset@name-20260101-120000`.
+async fn destroy_old_snapshots(args: &[String]) {
+    let Some(checkpoint) = args.last() else {
+        return;
+    };
+    let Some(at_pos) = checkpoint.rfind('@') else {
+        return;
+    };
+    let dataset = &checkpoint[..at_pos];
+    let snapshot_prefix = &checkpoint[at_pos + 1..];
+
+    let output = tokio::process::Command::new("zfs")
+        .arg("list")
+        .arg("-H")
+        .arg("-o")
+        .arg("name")
+        .arg("-t")
+        .arg("snapshot")
+        .arg(format!("{}@{}-*", dataset, snapshot_prefix))
+        .output()
+        .await;
+
+    let Ok(output) = output else {
+        warn!("Failed to run `zfs list` to find old snapshots");
+        return;
+    };
+    if !output.status.success() {
+        warn!(
+            "zfs list failed with exit code: {}",
+            output.status.code().unwrap_or(-1)
+        );
+        return;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut destroyed = 0;
+    for name in stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        if name == checkpoint {
+            continue; // keep the snapshot we just created
+        }
+        match tokio::process::Command::new("zfs")
+            .arg("destroy")
+            .arg(name)
+            .output()
+            .await
+        {
+            Ok(o) if o.status.success() => {
+                info!("Destroyed old ZFS snapshot {}", name);
+                destroyed += 1;
+            }
+            Ok(o) => warn!(
+                "Failed to destroy ZFS snapshot {}: {}",
+                name,
+                String::from_utf8_lossy(&o.stderr)
+            ),
+            Err(e) => warn!("Failed to run `zfs destroy {}`: {}", name, e),
+        }
+    }
+    if destroyed > 0 {
+        info!("Destroyed {} old ZFS snapshot(s)", destroyed);
     }
 }

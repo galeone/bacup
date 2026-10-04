@@ -116,7 +116,7 @@ pub trait Remote: DynClone + Send + Sync {
         builder
             .append_dir_all(path.file_name().unwrap(), path)
             .await
-            .unwrap();
+            .map_err(Error::LocalError)?;
         info!("Added items to archive");
 
         let mut encoder = builder.into_inner().await?;
