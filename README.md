@@ -81,6 +81,9 @@ When configuring the backups, the field **when** accepts configuration strings i
     command = "pg_dumpall -c -U postgres" # dump to stdout always
 
 [zfs]
+    # the user needs zfs permissions on the datasets:
+    # zfs allow $USER destroy,hold,send,snapshot <dataset>
+    # old snapshots are destroyed after each successful backup
     [zfs.root]
     snapshot_name = "root-fs"
     dataset = "zroot"
