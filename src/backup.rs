@@ -403,8 +403,7 @@ impl Backup {
                                 remote_prefix.join(file.strip_prefix(local_prefix).unwrap())
                             };
 
-                            let result: Result<(), remote::Error>;
-                            if file.is_dir() {
+                            let result = if file.is_dir() {
                                 // compress for sure, the uncompressed scenarios has been treated
                                 // outside this loop
                                 info!(
@@ -413,7 +412,7 @@ impl Backup {
                                     file.display(),
                                     remote_path.display()
                                 );
-                                result = remote.upload_folder_compressed(&file, &remote_path).await;
+                                remote.upload_folder_compressed(&file, &remote_path).await
                             } else if compress {
                                 info!(
                                     "[{}] Compressing file {} and uploading to {}",
@@ -421,7 +420,7 @@ impl Backup {
                                     file.display(),
                                     remote_path.display()
                                 );
-                                result = remote.upload_file_compressed(&file, &remote_path).await;
+                                remote.upload_file_compressed(&file, &remote_path).await
                             } else {
                                 info!(
                                     "[{}] Uploading file {} to {}",
@@ -429,8 +428,8 @@ impl Backup {
                                     file.display(),
                                     remote_path.display()
                                 );
-                                result = remote.upload_file(&file, &remote_path).await;
-                            }
+                                remote.upload_file(&file, &remote_path).await
+                            };
 
                             // Handle keep_last
                             if let Some(to_keep) = keep_last {

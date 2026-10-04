@@ -137,7 +137,7 @@ mod tests {
         assert!(folder.dump().await.is_ok());
 
         let files = folder.list().await;
-        assert!(files.len() > 0);
+        assert!(!files.is_empty());
 
         let git_info = cwd.join(".git").join("info");
         assert!(files.contains(&git_info));
@@ -173,7 +173,7 @@ mod tests {
         assert!(folder.dump().await.is_ok());
 
         let files = folder.list().await;
-        assert!(files.len() > 0);
+        assert!(!files.is_empty());
 
         let lib_path = cwd.join("src").join("lib.rs");
         assert!(files.contains(&lib_path));

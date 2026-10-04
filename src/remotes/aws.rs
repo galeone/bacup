@@ -45,7 +45,7 @@ struct Bucket {
 
 #[derive(Debug)]
 pub enum AwsError {
-    RemoteError(aws_sdk_s3::Error),
+    RemoteError(Box<aws_sdk_s3::Error>),
     LocalError(io::Error),
     GenericError(String),
 }
@@ -58,7 +58,7 @@ impl From<io::Error> for AwsError {
 
 impl From<aws_sdk_s3::Error> for AwsError {
     fn from(err: aws_sdk_s3::Error) -> Self {
-        AwsError::RemoteError(err)
+        AwsError::RemoteError(Box::new(err))
     }
 }
 
@@ -72,7 +72,9 @@ impl Bucket {
             .send()
             .await;
         if response.is_err() {
-            return Err(AwsError::RemoteError(response.err().unwrap().into()));
+            return Err(AwsError::RemoteError(Box::new(
+                response.err().unwrap().into(),
+            )));
         }
         let response = response.unwrap();
         let mut ret: Vec<String> = vec![];
@@ -116,7 +118,9 @@ impl Bucket {
                 .await;
 
             if response.is_err() {
-                return Err(AwsError::RemoteError(response.err().unwrap().into()));
+                return Err(AwsError::RemoteError(Box::new(
+                    response.err().unwrap().into(),
+                )));
             }
         } else {
             // Multipart upload
@@ -129,9 +133,9 @@ impl Bucket {
                 .send()
                 .await;
             if multipart_upload_res.is_err() {
-                return Err(AwsError::RemoteError(
+                return Err(AwsError::RemoteError(Box::new(
                     multipart_upload_res.err().unwrap().into(),
-                ));
+                )));
             }
             let multipart_upload_res = multipart_upload_res.unwrap();
             info!(
@@ -210,9 +214,9 @@ impl Bucket {
 
                 if upload_part_res.is_err() {
                     self.abort_multipart_upload(remote_path, upload_id).await;
-                    return Err(AwsError::RemoteError(
+                    return Err(AwsError::RemoteError(Box::new(
                         upload_part_res.err().unwrap().into_service_error().into(),
-                    ));
+                    )));
                 }
                 let upload_part_res = upload_part_res.unwrap();
 
@@ -240,9 +244,9 @@ impl Bucket {
                 .await;
             if complete_multipart_upload_res.is_err() {
                 self.abort_multipart_upload(remote_path, upload_id).await;
-                return Err(AwsError::RemoteError(
+                return Err(AwsError::RemoteError(Box::new(
                     complete_multipart_upload_res.err().unwrap().into(),
-                ));
+                )));
             }
             info!(
                 "Multipart upload completed successfully for {}",
@@ -286,7 +290,9 @@ impl Bucket {
             .await;
 
         if response.is_err() {
-            return Err(AwsError::RemoteError(response.err().unwrap().into()));
+            return Err(AwsError::RemoteError(Box::new(
+                response.err().unwrap().into(),
+            )));
         }
         info!(
             "Successfully deleted {} from bucket {}",
