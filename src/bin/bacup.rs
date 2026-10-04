@@ -181,7 +181,7 @@ async fn main() -> Result<(), i32> {
                 let key = format!("zfs.{}", service_name);
                 services.insert(
                     key,
-                    Box::new(Zfs::new(instance_config, &service_name).await.unwrap()),
+                    Box::new(Zfs::new(&instance_config, &service_name).await.unwrap()),
                 );
             }
         }

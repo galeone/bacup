@@ -70,6 +70,13 @@ pub struct DockerConfig {
 pub struct ZfsConfig {
     pub dataset: String,
     pub snapshot_name: String,
+    /// Optional cron expression (e.g. `"0 1 1 * *"`) controlling how often a
+    /// full backup is taken. When set, only the runs where it is due take a
+    /// full backup and the runs in between are incrementals against the
+    /// latest existing snapshot. When absent, every run is a full backup
+    /// (previous behavior).
+    #[serde(default)]
+    pub full_when: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
