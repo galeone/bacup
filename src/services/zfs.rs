@@ -396,7 +396,7 @@ impl Zfs {
         // dump at upload time is wasted CPU with no size gain, so flag it when
         // the dataset is compressed.
         let compress_output = Command::new(&cmd)
-            .args(["get", "-p", "-o", "value", "compression", dataset])
+            .args(["get", "-H", "-p", "-o", "value", "compression", dataset])
             .output()
             .await?;
         if !compress_output.status.success() {
