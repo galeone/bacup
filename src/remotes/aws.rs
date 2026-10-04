@@ -64,23 +64,39 @@ impl From<aws_sdk_s3::Error> for AwsError {
 
 impl Bucket {
     pub async fn list(&self, prefix: &str) -> Result<Vec<String>, AwsError> {
-        let response = self
-            .client
-            .list_objects_v2()
-            .bucket(&self.bucket_name)
-            .prefix(prefix.trim_start_matches('/'))
-            .send()
-            .await;
-        if response.is_err() {
-            return Err(AwsError::RemoteError(Box::new(
-                response.err().unwrap().into(),
-            )));
-        }
-        let response = response.unwrap();
+        // list_objects_v2 returns at most 1000 keys per page; follow the
+        // continuation token until the prefix is fully enumerated, otherwise
+        // keep_last pruning would only see the first 1000 objects.
+        let prefix = prefix.trim_start_matches('/');
+        let mut continuation_token: Option<String> = None;
         let mut ret: Vec<String> = vec![];
-        for res in response.contents.iter() {
-            for object in res {
-                ret.push(object.key.as_ref().unwrap().to_owned());
+        loop {
+            let mut lister = self
+                .client
+                .list_objects_v2()
+                .bucket(&self.bucket_name)
+                .prefix(prefix);
+            if let Some(token) = &continuation_token {
+                lister = lister.continuation_token(token);
+            }
+            let response = lister.send().await;
+            if response.is_err() {
+                return Err(AwsError::RemoteError(Box::new(
+                    response.err().unwrap().into(),
+                )));
+            }
+            let response = response.unwrap();
+            for res in response.contents.iter() {
+                for object in res {
+                    ret.push(object.key.as_ref().unwrap().to_owned());
+                }
+            }
+            match (
+                response.is_truncated().unwrap_or(false),
+                response.next_continuation_token,
+            ) {
+                (true, Some(token)) => continuation_token = Some(token),
+                _ => break,
             }
         }
         Ok(ret)

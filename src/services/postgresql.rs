@@ -112,7 +112,7 @@ impl PostgreSql {
         let stdout = std::str::from_utf8(&output.stdout).unwrap().trim();
         if stdout == "0" {
             return Err(Error::RuntimeError(io::Error::other(format!(
-                "database {} does not exit or user {} not allowed to query the db",
+                "database {} does not exist or user {} not allowed to query the db",
                 db_name, username
             ))));
         }
@@ -120,7 +120,7 @@ impl PostgreSql {
         args.pop();
         args.pop();
 
-        // All the database dumps shuld be performend without aksing for password
+        // All the database dumps should be performed without asking for password
         args.push("--no-password");
 
         let cmd = match which("pg_dump") {
@@ -174,7 +174,12 @@ impl Service for PostgreSql {
             .status()
             .await
         {
-            Ok(_) => Ok(Dump { path: Some(dest) }),
+            Ok(status) if status.success() => Ok(Dump { path: Some(dest) }),
+            Ok(status) => Err(Error::RuntimeError(io::Error::other(format!(
+                "pg_dump exited with {} for database {}",
+                status, self.db_name
+            )))
+            .into()),
             Err(error) => Err(Error::RuntimeError(error).into()),
         }
     }

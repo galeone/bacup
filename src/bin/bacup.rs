@@ -294,11 +294,6 @@ async fn main() -> Result<(), i32> {
     }
     use tokio::time::Duration;
     loop {
-        /*if let Err(e) = scheduler.tick() {
-            error!("Scheduler tick error: {:?}", e);
-            return Err(-1);
-        }
-        */
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }

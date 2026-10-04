@@ -183,7 +183,7 @@ pub trait Remote: DynClone + Send + Sync {
 
         parent.join(format!(
             "{}-{}.tar.gz",
-            now.format("%Y-%m-%d-%H.%M"),
+            now.format("%Y-%m-%d-%H.%M.%S"),
             remote_path.file_name().unwrap().to_str().unwrap()
         ))
     }
@@ -197,7 +197,7 @@ pub trait Remote: DynClone + Send + Sync {
 
         parent.join(format!(
             "{}-{}.gz",
-            now.format("%Y-%m-%d-%H.%M"),
+            now.format("%Y-%m-%d-%H.%M.%S"),
             remote_path.file_name().unwrap().to_str().unwrap()
         ))
     }

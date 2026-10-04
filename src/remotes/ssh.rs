@@ -133,7 +133,7 @@ impl Ssh {
             //
             // But anyway this is a success since the connection was succesfull.
             warn!(
-                "Connection to  {}@{}:{} succeded, but received: {}",
+                "Connection to {}@{}:{} succeeded, but received: {}",
                 config.username, config.host, config.port, stderr
             );
         } else {
@@ -192,7 +192,7 @@ impl remote::Remote for Ssh {
             .args(
                 self.ssh_args
                     .iter()
-                    .chain(once(&format!("find {}/*", remote_path))),
+                    .chain(once(&format!("find {}/*", shell_quote(remote_path)))),
             )
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -221,7 +221,7 @@ impl remote::Remote for Ssh {
             .args(
                 self.ssh_args
                     .iter()
-                    .chain(once(&format!("rm -r {}", remote_path))),
+                    .chain(once(&format!("rm -r {}", shell_quote(remote_path)))),
             )
             .stdin(Stdio::null())
             .stdout(Stdio::null())

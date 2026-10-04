@@ -290,7 +290,7 @@ mod tests {
         let now: chrono::DateTime<chrono::Utc> = chrono::Utc::now();
         let dest = tmp_dir
             .path()
-            .join(format!("{}-Cargo.toml.gz", now.format("%Y-%m-%d-%H.%M"),));
+            .join(format!("{}-Cargo.toml.gz", now.format("%Y-%m-%d-%H.%M.%S"),));
 
         assert!(dest.exists());
     }
@@ -350,7 +350,7 @@ mod tests {
         let now: chrono::DateTime<chrono::Utc> = chrono::Utc::now();
         let dest = tmp_dir.path().join(format!(
             "{}-{}.tar.gz",
-            now.format("%Y-%m-%d-%H.%M"),
+            now.format("%Y-%m-%d-%H.%M.%S"),
             remote_filename
         ));
 
