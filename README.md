@@ -212,6 +212,21 @@ sudo systemctl enable --now bacup@$USER.service
 
 **Note**: the working directory is important if you plan to back-up big files. The files are created in that directory before being uploaded, so set it to a location where you have the write right and enough space.
 
+## Development
+
+To test an unreleased branch, build and install it from your local checkout — it replaces the crates.io binary in `~/.cargo/bin`:
+
+```
+git clone https://github.com/galeone/bacup
+cd bacup
+git checkout <branch>
+cargo install --path .
+```
+
+Useful before wiring the new version into the systemd service, or to quickly verify a fix on a real backup. When a release you like is out, `cargo install bacup` puts the released binary back.
+
+Alternatively, `cargo build --release` leaves the binary at `target/release/bacup` without touching the installed one — handy for a one-off run (it still reads `$HOME/.bacup/config.toml`).
+
 ## Remote configuration
 
 Configuring the remotes is straightforward. Every remote have a different way of getting the access code, here we try to share some useful reference.
