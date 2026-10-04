@@ -346,7 +346,7 @@ impl remote::Remote for Git {
                 .status();
             let _ = Command::new(&self.git_cmd).args(["clean", "-fd"]).status();
             for path in paths {
-                let mut relative = path.clone();
+                let relative = path.clone();
                 if relative
                     .components()
                     .any(|component| component.as_os_str() == ".git")
@@ -354,7 +354,7 @@ impl remote::Remote for Git {
                     continue;
                 }
                 if relative.is_dir() {
-                    if dest.join(relative.file_name().unwrap()).exists() == false {
+                    if !dest.join(relative.file_name().unwrap()).exists() {
                         fs::create_dir_all(dest.join(relative.file_name().unwrap())).await?;
                     }
                 } else {
