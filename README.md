@@ -82,7 +82,7 @@ When configuring the backups, the field **when** accepts configuration strings i
 
 [zfs]
     # the user needs zfs permissions on the datasets (bacup verifies them at startup):
-    # zfs allow $USER destroy,list,send,snapshot <dataset>
+    # zfs allow $USER destroy,mount,send,snapshot <dataset>
     # (permissions are inherited by child datasets)
     [zfs.root]
     snapshot_name = "root-fs"

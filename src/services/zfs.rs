@@ -374,7 +374,7 @@ impl Zfs {
             )));
         }
         let allow_text = String::from_utf8_lossy(&allow_output.stdout).to_string();
-        let required = ["destroy", "list", "send", "snapshot"];
+        let required = ["destroy", "mount", "send", "snapshot"];
         let ok = allow_text.lines().any(|line| {
             let line = line.trim();
             let is_user_line = line.starts_with(&format!("user {user}"))
@@ -387,7 +387,7 @@ impl Zfs {
             return Err(Error::String(format!(
                 "user \"{user}\" is not allowed to manage zfs snapshots on {dataset}. \
                  Run `zfs allow {user} {required_list} {dataset}` (permissions are inherited \
-                 by child datasets) and make sure `list` is granted so bacup can enumerate snapshots."
+                 by child datasets)."
             )));
         }
 
