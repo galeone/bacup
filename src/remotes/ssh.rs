@@ -67,6 +67,11 @@ impl fmt::Display for Error {
     }
 }
 
+/// Quote a value for use inside a remote shell command (POSIX single-quoting).
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
 #[derive(Clone)]
 pub struct Ssh {
     remote_name: String,
@@ -236,11 +241,7 @@ impl remote::Remote for Ssh {
     }
 
     async fn upload_file(&self, path: &Path, remote_path: &Path) -> Result<(), remote::Error> {
-        // Read file
-        let mut content: Vec<u8> = vec![];
-        let mut file = File::open(path).await?;
-        let file_size = content.len();
-        file.read_to_end(&mut content).await?;
+        let file_size = fs::metadata(path).await?.len();
         let remote_path = remote_path.to_str().unwrap();
         info!(
             "Uploading {} bytes from {} to {}",
@@ -250,11 +251,12 @@ impl remote::Remote for Ssh {
         );
 
         // cat file | ssh -Pxxx user@host "cat > file"
+        let mut file = File::open(path).await?;
         let mut ssh = Command::new(&self.ssh_cmd)
             .args(
                 self.ssh_args
                     .iter()
-                    .chain(once(&format!("cat > {}", remote_path))),
+                    .chain(once(&format!("cat > {}", shell_quote(remote_path)))),
             )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -263,9 +265,16 @@ impl remote::Remote for Ssh {
 
         {
             let stdin = ssh.stdin.as_mut().unwrap();
-            // This is the "cat file" on localhost piped into ssh
-            // when stdin is dropped
-            stdin.write_all(&content)?;
+            // This is the "cat file" on localhost piped into ssh:
+            // stream the file in chunks instead of reading it into memory.
+            let mut buf = vec![0u8; 8192];
+            loop {
+                let n = file.read(&mut buf).await?;
+                if n == 0 {
+                    break;
+                }
+                stdin.write_all(&buf[..n])?;
+            }
         }
         // Close stdin for being 100% sure that the process read all the file
 
@@ -316,37 +325,41 @@ impl remote::Remote for Ssh {
             .stdout(Stdio::piped())
             .spawn()?;
 
-        if let Some(cat_output) = cat.stdout.take() {
-            let mut ssh = Command::new(&self.ssh_cmd)
-                .stdin(cat_output)
-                .stdout(Stdio::null())
-                .args(
-                    self.ssh_args
-                        .iter()
-                        .chain(once(&format!("cat > {} ", remote_path.display()))),
-                )
-                .spawn()?;
-
-            cat.wait()?;
-
-            let status = ssh.wait()?;
-            if !status.success() {
-                return Err(remote::Error::LocalError(io::Error::other(
-                    "Failure while executing ssh command",
-                )));
+        let cat_output = match cat.stdout.take() {
+            Some(out) => out,
+            None => {
+                return Err(remote::Error::LocalError(io::Error::other(format!(
+                    "Unable to cat {}",
+                    compressed_file.path().display()
+                ))))
             }
-            info!(
-                "Successfully uploaded compressed file {} to {}",
-                compressed_file.path().display(),
-                remote_path.display()
-            );
-            Ok(())
-        } else {
-            Err(remote::Error::LocalError(io::Error::other(format!(
-                "Unable to cat {}",
-                compressed_file.path().display()
+        };
+
+        let mut ssh = Command::new(&self.ssh_cmd)
+            .stdin(cat_output)
+            .stdout(Stdio::null())
+            .args(self.ssh_args.iter().chain(once(&format!(
+                "cat > {}",
+                shell_quote(&remote_path.display().to_string())
             ))))
+            .spawn()?;
+
+        // Wait on ssh first: if ssh dies early, cat receives SIGPIPE and
+        // its failure must not mask the real ssh error.
+        let status = ssh.wait()?;
+        let _ = cat.wait();
+
+        if !status.success() {
+            return Err(remote::Error::LocalError(io::Error::other(
+                "Failure while executing ssh command",
+            )));
         }
+        info!(
+            "Successfully uploaded compressed file {} to {}",
+            compressed_file.path().display(),
+            remote_path.display()
+        );
+        Ok(())
     }
 
     async fn upload_folder(
