@@ -81,15 +81,20 @@ When configuring the backups, the field **when** accepts configuration strings i
     command = "pg_dumpall -c -U postgres" # dump to stdout always
 
 [zfs]
-    # the user needs zfs permissions on the datasets:
-    # zfs allow $USER destroy,hold,send,snapshot <dataset>
-    # old snapshots are destroyed after each successful backup
+    # the user needs zfs permissions on the datasets (bacup verifies them at startup):
+    # zfs allow $USER destroy,list,send,snapshot <dataset>
+    # (permissions are inherited by child datasets)
     [zfs.root]
     snapshot_name = "root-fs"
     dataset = "zroot"
     [zfs.storage]
     snapshot_name = "storage-fs"
     dataset = "storage"
+    # optional: how often a full backup is taken. Accepts the same format
+    # as the `when` field (e.g. "monthly 1 01:00") or a raw cron expression.
+    # The runs in between take incremental backups against the latest
+    # snapshot. When omitted every run is a full backup.
+    #full_when = "monthly 1 01:00"
 
 # mapping services to remote
 [backup]
@@ -155,6 +160,35 @@ When `compression = true`, the file/folder are compressed using Gzip and the fil
 ```
 YYYY-MM-DD-hh:mm-filename.gz # or .tar.gz if filename is an archive
 ```
+
+## ZFS backups
+
+The `zfs` service backs up a dataset tree with `zfs snapshot` + `zfs send`. Every service produces one dump file per run, which is then uploaded to the remote like any other backup: the schedule, `remote_path` and `keep_last` are the usual `[backup.<name>]` fields (`what = "zfs.<service>"`).
+
+### Full and incremental backups
+
+- On every run bacup creates a snapshot `dataset@snapshot_name-<kind>-<timestamp>` on the dataset and all of its children, then `zfs send -R` writes it to the working directory as `<service>-<kind>-<timestamp>.snapshot` (`<kind>` is `full` or `inc`).
+- Without `full_when` every run is a full backup.
+- With `full_when` set, a full backup is taken when the schedule is due (the first run is always a full) and the runs in between are **incrementals** against the latest existing snapshot of the chain, so they only contain what changed since the last run and stay small.
+- If an incremental can't be sent (e.g. a child dataset was destroyed and recreated), bacup destroys the incremental snapshot and retries the run as a full backup, so a run never fails silently.
+- After each **full** backup the previous chain is replaced: all older snapshots of the service (including those on child datasets) and the older local dump files are destroyed. On the remote, dump files are pruned by `keep_last` as usual.
+- The dump is produced with `zfs send -c -L`: blocks that are compressed on disk stay compressed in the dump file (the `-c` flag needs OpenZFS >= 2.1.1 on the sender). If the dataset uses compression (check with `zfs get -o value compression <dataset>`), set `compress = false` on the backup — gzip'ing an already-compressed stream at upload time is wasted CPU with no size gain. Keep `compress = true` only for uncompressed datasets. bacup logs a hint at startup when the dataset is compressed.
+
+### Restoring
+
+Dump files are standard `zfs receive` streams. To restore, take the newest full and then apply every incremental after it, in timestamp order:
+
+```
+zfs receive -F targetds < <service>-full-20260901-010000.snapshot
+zfs receive -F targetds < <service>-inc-20260902-010000.snapshot
+zfs receive -F targetds < <service>-inc-20260903-010000.snapshot
+```
+
+Dumps of compressed datasets carry compressed blocks (sent with `-c`), so the receiving pool must have the matching compression features enabled (`lz4_compress`/`zstd_compress`) — i.e. the same or a newer ZFS than the original pool.
+
+A restore therefore needs the newest full and every incremental taken after it. If you plan to restore from the remote, size `keep_last` so it can never prune a full that incrementals on top of it still need.
+
+bacup enforces this at startup: for every zfs backup with a `full_when`, it computes the longest stretch of incremental runs between two fulls from the two schedules and refuses to start if `keep_last` is set below what keeps a full and all its incrementals. Without `keep_last` nothing is pruned, so nothing can break the chain.
 
 ## Installation & service setup
 

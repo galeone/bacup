@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::string::String;
 
 use bacup::backup::Backup;
-use bacup::config::Config;
+use bacup::config::{BackupConfig, Config, ZfsConfig};
 
 use bacup::remotes::aws::AwsBucket;
 use bacup::remotes::git::Git;
@@ -34,6 +34,7 @@ use bacup::services::folders::Folder;
 use bacup::services::postgresql::PostgreSql;
 use bacup::services::service::Service;
 
+use bacup::services::zfs::required_keep_last;
 use bacup::services::zfs::Zfs;
 use log::*;
 use structopt::StructOpt;
@@ -49,6 +50,37 @@ struct Opt {
     /// Verbose mode (-v, -vv, -vvv, etc)
     #[structopt(short = "v", long = "verbose", parse(from_occurrences))]
     verbose: usize,
+}
+
+/// Returns a message if a zfs backup's keep_last is too small to keep a
+/// restorable snapshot chain.
+fn check_zfs_keep_last(
+    backup_name: &str,
+    backup: &BackupConfig,
+    zfs: &Option<HashMap<String, ZfsConfig>>,
+) -> Result<(), String> {
+    let Some(service_name) = backup.what.strip_prefix("zfs.") else {
+        return Ok(());
+    };
+    let Some(configs) = zfs else {
+        return Ok(());
+    };
+    let Some(zfs_config) = configs.get(service_name) else {
+        return Ok(());
+    };
+    let Some(full_when) = &zfs_config.full_when else {
+        return Ok(());
+    };
+    let required = required_keep_last(&backup.when, full_when)
+        .map_err(|error| format!("Backup {backup_name}: {error}"))?;
+    if let Some(keep_last) = backup.keep_last {
+        if keep_last < required {
+            return Err(format!(
+                "Backup {backup_name}: keep_last {keep_last} is too small for zfs service {service_name} (full_when '{full_when}'): the remote must keep at least {required} latest snapshots to stay restorable. Raise keep_last or remove it."
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[tokio::main]
@@ -136,6 +168,16 @@ async fn main() -> Result<(), i32> {
         None => warn!("No Git remotes configured."),
     }
 
+    // ZFS full + incremental backups are only restorable if the remote keeps
+    // a complete chain (a full and its incrementals), so refuse to start
+    // when keep_last would prune away older fulls.
+    for (backup_name, backup_config) in &config.backup {
+        if let Err(message) = check_zfs_keep_last(backup_name, backup_config, &config.zfs) {
+            error!("{message}");
+            return Err(-1);
+        }
+    }
+
     let mut services: HashMap<String, Box<dyn Service + Send + Sync>> = HashMap::new();
     match config.folders {
         Some(folders) => {
@@ -185,7 +227,7 @@ async fn main() -> Result<(), i32> {
                 );
             }
         }
-        None => warn!("No Docker to backup."),
+        None => warn!("No Zfs to backup."),
     }
 
     let mut backup: HashMap<String, Arc<Backup>> = HashMap::new();
@@ -258,5 +300,74 @@ async fn main() -> Result<(), i32> {
         }
         */
         tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn backup(what: &str, when: &str, keep_last: Option<u32>) -> BackupConfig {
+        BackupConfig {
+            what: what.to_string(),
+            r#where: "localhost.test".to_string(),
+            when: when.to_string(),
+            remote_path: "/backups".to_string(),
+            compress: false,
+            keep_last,
+        }
+    }
+
+    fn zfs(full_when: Option<&str>) -> Option<HashMap<String, ZfsConfig>> {
+        let mut configs = HashMap::new();
+        configs.insert(
+            "pool".to_string(),
+            ZfsConfig {
+                dataset: "tank".to_string(),
+                snapshot_name: "snap".to_string(),
+                full_when: full_when.map(String::from),
+            },
+        );
+        Some(configs)
+    }
+
+    #[test]
+    fn keep_last_too_small_refuses_to_start() {
+        let b = backup("zfs.pool", "daily 01:00", Some(7));
+        let err = check_zfs_keep_last("db", &b, &zfs(Some("monthly 1 01:00"))).unwrap_err();
+        assert!(err.contains("keep_last 7 is too small"), "{}", err);
+        assert!(err.contains("at least 31"), "{}", err);
+    }
+
+    #[test]
+    fn keep_last_sufficient_starts() {
+        for keep_last in [31u32, 32] {
+            let b = backup("zfs.pool", "daily 01:00", Some(keep_last));
+            assert!(check_zfs_keep_last("db", &b, &zfs(Some("monthly 1 01:00"))).is_ok());
+        }
+    }
+
+    #[test]
+    fn no_keep_last_never_refuses() {
+        let b = backup("zfs.pool", "daily 01:00", None);
+        assert!(check_zfs_keep_last("db", &b, &zfs(Some("monthly 1 01:00"))).is_ok());
+    }
+
+    #[test]
+    fn no_full_when_never_refuses() {
+        let b = backup("zfs.pool", "daily 01:00", Some(1));
+        assert!(check_zfs_keep_last("db", &b, &zfs(None)).is_ok());
+    }
+
+    #[test]
+    fn non_zfs_service_is_ignored() {
+        let b = backup("folders.home", "daily 01:00", Some(1));
+        assert!(check_zfs_keep_last("home", &b, &zfs(Some("monthly 1 01:00"))).is_ok());
+    }
+
+    #[test]
+    fn invalid_full_when_refuses() {
+        let b = backup("zfs.pool", "daily 01:00", Some(100));
+        assert!(check_zfs_keep_last("db", &b, &zfs(Some("nonsense"))).is_err());
     }
 }

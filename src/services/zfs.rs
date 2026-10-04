@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::str::FromStr;
 
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use croner::Cron;
 use log::{debug, info, warn};
 use tokio::fs;
@@ -11,6 +11,7 @@ use tokio::process::Command;
 
 use crate::config::ZfsConfig;
 use crate::services::service::{Dump, Service};
+use crate::when;
 
 const TS_FORMAT: &str = "%Y%m%d-%H%M%S";
 const FULL_MARK: &str = "full";
@@ -83,9 +84,17 @@ pub(crate) fn dump_file_name(name: &str, kind: SnapshotKind, ts: &str) -> String
 }
 
 /// Arguments for the `zfs send` command to dump the given snapshot.
-/// A full snapshot is sent with `send -R -v`, an incremental one with
-/// `send -R -v -i <base>` where `<base>` is the name of the snapshot it is
-/// based on.
+/// A full snapshot is sent with `send -R -v -c -L`, an incremental one with
+/// `send -R -v -c -L -i <base>` where `<base>` is the name of the snapshot it
+/// is based on.
+///
+/// `-c` keeps blocks compressed in the stream when they are compressed on
+/// disk (OpenZFS >= 2.1.1), and `-L` keeps the on-disk block sizes so that
+/// `-c` is not defeated by the `large_blocks` feature (without `-L`, data is
+/// decompressed before sending to be split into smaller blocks). For datasets
+/// without compression the two flags are a no-op. Dump files of compressed
+/// datasets are therefore already compressed and do not need the gzip layer
+/// at upload time (`compress = false`).
 pub(crate) fn send_args(kind: SnapshotKind, base: Option<&str>, new_name: &str) -> Vec<String> {
     match (kind, base) {
         (SnapshotKind::Incremental, Some(base)) => {
@@ -93,13 +102,22 @@ pub(crate) fn send_args(kind: SnapshotKind, base: Option<&str>, new_name: &str) 
                 "send".into(),
                 "-R".into(),
                 "-v".into(),
+                "-c".into(),
+                "-L".into(),
                 "-i".into(),
                 base.into(),
                 new_name.into(),
             ]
         }
         // A full snapshot, or (defensively) an incremental without a base.
-        _ => vec!["send".into(), "-R".into(), "-v".into(), new_name.into()],
+        _ => vec![
+            "send".into(),
+            "-R".into(),
+            "-v".into(),
+            "-c".into(),
+            "-L".into(),
+            new_name.into(),
+        ],
     }
 }
 
@@ -219,6 +237,97 @@ pub struct Zfs {
     full_when: Option<Cron>,
 }
 
+/// Parses a schedule expression, accepting the human friendly formats of
+/// the `when` field (e.g. "monthly 1 01:00") and falling back to a raw
+/// cron expression.
+pub fn parse_schedule(expr: &str) -> Result<Cron, Error> {
+    let parsable = when::parse_when(expr).unwrap_or_else(|_| expr.to_string());
+    Cron::from_str(&parsable).map_err(|e| {
+        Error::String(format!(
+            "invalid schedule expression {expr}: not a valid when format nor a cron expression ({e})"
+        ))
+    })
+}
+
+/// Returns the minimum `keep_last` a zfs backup needs so the remote always
+/// retains a restorable chain: the latest full snapshot plus every
+/// incremental taken since it.
+///
+/// An incremental stream (`zfs send -i base`) cannot be restored without its
+/// base snapshot, so `keep_last` must survive the longest stretch of
+/// incremental runs between two consecutive fulls. `backup_when` is the
+/// backup's `when` field, `full_when` the zfs service's `full_when`; both
+/// accept the human when formats or raw cron expressions.
+///
+/// Returns an error if the expressions cannot be parsed or if `full_when`
+/// fires less than twice in the four year simulation window, in which case
+/// the required `keep_last` cannot be bounded.
+pub fn required_keep_last(backup_when: &str, full_when: &str) -> Result<u32, Error> {
+    let backup = parse_schedule(backup_when)?;
+    let full = parse_schedule(full_when)?;
+
+    // A fixed four year window (spanning a leap year) is enough to observe
+    // every gap pattern the two periodic schedules can produce. The fixed
+    // start keeps the result deterministic.
+    let from = NaiveDate::from_ymd_opt(2026, 1, 1)
+        .and_then(|d| d.and_hms_opt(0, 0, 0))
+        .expect("fixed simulation window start is a valid date");
+    let until = from + chrono::Duration::days(4 * 365 + 1);
+
+    let backup_runs = occurrences(&backup, from, until)?;
+    let full_runs = occurrences(&full, from, until)?;
+    if full_runs.len() < 2 {
+        return Err(Error::String(format!(
+            "full_when '{full_when}' fires less than twice in four years, \
+             the required keep_last cannot be bounded"
+        )));
+    }
+
+    // Max number of backup runs strictly between two consecutive fulls.
+    let mut max_inc = 0usize;
+    for pair in full_runs.windows(2) {
+        let (lo, hi) = (pair[0], pair[1]);
+        // Strictly between: a backup at lo or hi is that full's own run.
+        let before = backup_runs.partition_point(|t| *t <= lo);
+        let up_to = backup_runs.partition_point(|t| *t < hi);
+        max_inc = max_inc.max(up_to - before);
+    }
+
+    // One for the full snapshot itself, one per incremental in the longest
+    // gap.
+    Ok(max_inc as u32 + 1)
+}
+
+/// All occurrences of `cron` in `[from, until]`.
+fn occurrences(
+    cron: &Cron,
+    from: NaiveDateTime,
+    until: NaiveDateTime,
+) -> Result<Vec<NaiveDateTime>, Error> {
+    let mut out = Vec::new();
+    if cron
+        .is_time_matching(&from)
+        .map_err(|e| Error::String(e.to_string()))?
+    {
+        out.push(from);
+    }
+    let mut cursor = from;
+    while out.len() < 100_000 {
+        let next = cron.find_next_occurrence(&cursor, false).map_err(|e| {
+            Error::String(format!(
+                "schedule '{}' stopped producing occurrences: {e}",
+                cron.as_str()
+            ))
+        })?;
+        if next > until {
+            break;
+        }
+        out.push(next);
+        cursor = next;
+    }
+    Ok(out)
+}
+
 impl Zfs {
     pub async fn new(config: &ZfsConfig, name: &str) -> Result<Zfs, Error> {
         let dataset = &config.dataset;
@@ -229,12 +338,7 @@ impl Zfs {
         let cmd = zfs.to_str().unwrap().to_string();
 
         let full_when = match &config.full_when {
-            Some(expr) => {
-                let cron = Cron::from_str(expr).map_err(|e| {
-                    Error::String(format!("invalid full_when expression {expr}: {e}"))
-                })?;
-                Some(cron)
-            }
+            Some(expr) => Some(parse_schedule(expr)?),
             None => None,
         };
 
@@ -271,6 +375,29 @@ impl Zfs {
                  Run `zfs allow {user} {required_list} {dataset}` (permissions are inherited \
                  by child datasets) and make sure `list` is granted so bacup can enumerate snapshots."
             )));
+        }
+
+        // The dump is produced with `zfs send -c -L` (see `send_args`): blocks
+        // compressed on disk stay compressed in the stream. Gzip'ing such a
+        // dump at upload time is wasted CPU with no size gain, so flag it when
+        // the dataset is compressed.
+        let compress_output = Command::new(&cmd)
+            .args(["get", "-p", "-o", "value", "compression", dataset])
+            .output()
+            .await?;
+        if !compress_output.status.success() {
+            return Err(Error::String(format!(
+                "failed to query compression on {dataset}: {}",
+                String::from_utf8_lossy(&compress_output.stderr)
+            )));
+        }
+        let compression = String::from_utf8_lossy(&compress_output.stdout)
+            .trim()
+            .to_string();
+        if compression != "off" {
+            info!(
+                "dataset {dataset} is compressed ({compression}): the zfs dump is already compressed, consider compress = false for its backups"
+            );
         }
 
         debug!("new zfs service on {dataset} (snapshot base {snapshot_base})");
@@ -636,7 +763,7 @@ mod tests {
     fn send_args_full_and_inc() {
         assert_eq!(
             send_args(SnapshotKind::Full, None, "tank@snap-full-1"),
-            vec!["send", "-R", "-v", "tank@snap-full-1"]
+            vec!["send", "-R", "-v", "-c", "-L", "tank@snap-full-1"]
         );
         assert_eq!(
             send_args(
@@ -648,6 +775,8 @@ mod tests {
                 "send",
                 "-R",
                 "-v",
+                "-c",
+                "-L",
                 "-i",
                 "tank@snap-full-1",
                 "tank@snap-inc-2"
@@ -787,5 +916,50 @@ mod tests {
                 "snap-inc-20260101-120000.snapshot".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn parse_schedule_accepts_when_and_cron_formats() {
+        assert!(parse_schedule("monthly 1 01:00").is_ok());
+        assert!(parse_schedule("0 1 1 * *").is_ok());
+        assert!(parse_schedule("nonsense").is_err());
+    }
+
+    #[test]
+    fn required_keep_last_monthly_full_daily_backup() {
+        // 31 day month: 30 incrementals between the fulls, plus the full.
+        assert_eq!(
+            required_keep_last("daily 01:00", "monthly 1 01:00").unwrap(),
+            31
+        );
+        // Same schedules expressed as raw cron.
+        assert_eq!(required_keep_last("0 1 * * *", "0 1 1 * *").unwrap(), 31);
+    }
+
+    #[test]
+    fn required_keep_last_weekly_full_daily_backup() {
+        assert_eq!(
+            required_keep_last("daily 01:00", "weekly monday 01:00").unwrap(),
+            7
+        );
+    }
+
+    #[test]
+    fn required_keep_last_daily_full() {
+        assert_eq!(required_keep_last("daily 01:00", "daily 01:00").unwrap(), 1);
+    }
+
+    #[test]
+    fn required_keep_last_invalid_expressions() {
+        assert!(required_keep_last("nonsense", "monthly 1 01:00").is_err());
+        assert!(required_keep_last("daily 01:00", "nonsense").is_err());
+    }
+
+    #[test]
+    fn required_keep_last_unbounded_full_schedule() {
+        // Never fires (February 31).
+        assert!(required_keep_last("daily 01:00", "0 0 31 2 *").is_err());
+        // Fires once in the window (February 29, leap year only).
+        assert!(required_keep_last("daily 01:00", "0 0 29 2 *").is_err());
     }
 }

@@ -15,9 +15,9 @@
 use crate::config::BackupConfig;
 use crate::remotes::remote;
 use crate::services::service::Service;
+use crate::when;
 
 use cron::Schedule;
-use regex::Regex;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -26,7 +26,6 @@ use std::sync::Arc;
 use tokio_cron_scheduler::JobSchedulerError;
 use tokio_cron_scheduler::{Job, JobScheduler};
 
-use chrono::Weekday;
 use log::{error, info};
 
 use uuid::Uuid;
@@ -63,15 +62,30 @@ pub struct Backup {
 }
 
 impl Backup {
-    fn get_hours_and_minutes(when: &str) -> Option<(i8, i8)> {
-        let re = Regex::new(r"(\d{2}):(\d{2})").unwrap();
-        let cap = re.captures(when)?;
+    pub async fn new(
+        name: &str,
+        remote: Box<dyn remote::Remote + Send + Sync>,
+        service: Box<dyn Service + Send + Sync>,
+        config: &BackupConfig,
+    ) -> Result<Backup, Error> {
+        let parsable = when::parse_when(&config.when).ok();
+        let to_parse: &str = parsable.as_deref().unwrap_or(&config.when);
 
-        let ret: (i8, i8) = (cap[1].parse().unwrap(), cap[2].parse().unwrap());
-        if (0..24).contains(&ret.0) && (0..60).contains(&ret.1) {
-            return Some(ret);
-        }
-        None
+        let schedule = cron::Schedule::from_str(to_parse);
+        if schedule.is_err() {
+            return Err(Error::InvalidCronConfiguration(schedule.err().unwrap()));
+        };
+
+        Ok(Backup {
+            name: String::from(name),
+            what: service,
+            r#where: remote,
+            remote_path: PathBuf::from(config.remote_path.clone()),
+            when: config.when.clone(),
+            compress: config.compress,
+            schedule: schedule.unwrap(),
+            keep_last: config.keep_last,
+        })
     }
 
     fn log_result(
@@ -97,196 +111,11 @@ impl Backup {
                 "[{}] Error during upload{} of {}: {}. Error: {}",
                 name,
                 if compress { " or compression" } else { "" },
-                if file.is_dir() { "folder" } else { "file" },
                 file.display(),
+                remote_name,
                 result.err().unwrap()
             );
         }
-    }
-
-    fn parse_daily(input: &str) -> Result<String, Error> {
-        // Daily 12:30
-        let daily = "daily";
-        if input.contains(daily) {
-            let input = input.replace(daily, "");
-
-            let hm = Self::get_hours_and_minutes(&input);
-            if hm.is_none() {
-                return Err(Error::InvalidWhenConfiguration(String::from(
-                    "Unable to find hours:minutes",
-                )));
-            }
-            let hm = hm.unwrap();
-            let input = input.replace(&format!("{:02}:{:02}", hm.0, hm.1), "");
-            let input = input.trim();
-            if !input.is_empty() {
-                return Err(Error::InvalidWhenConfiguration(format!(
-                    "Expected to consume all the when string, unable to parse \
-                    remaining part: {}",
-                    input
-                )));
-            }
-
-            // sec   min   hour   day of month   month   day of week
-            return Ok(format!("{} {} {} {} {} {}", 0, hm.1, hm.0, "*", "*", "*"));
-        }
-        Err(Error::InvalidWhenConfiguration(String::from(
-            "Unable to find daily identifier",
-        )))
-    }
-
-    fn parse_weekly(input: &str) -> Result<String, Error> {
-        // Monday 15:40 or Weekly Monday 15:40
-        let weekdays = [
-            (Weekday::Mon, "Monday"),
-            (Weekday::Tue, "Tuesday"),
-            (Weekday::Wed, "Wednesday"),
-            (Weekday::Thu, "Thursday"),
-            (Weekday::Fri, "Friday"),
-            (Weekday::Sat, "Saturday"),
-            (Weekday::Sun, "Sunday"),
-        ];
-
-        let weekdays = weekdays.iter().map(|d| {
-            (
-                d.0.to_string().to_lowercase(),
-                String::from(d.1).to_lowercase(),
-            )
-        });
-        for day in weekdays {
-            let short = input.contains(&day.0);
-            let long = input.contains(&day.1);
-            if short || long {
-                let input = input.replace(if long { &day.1 } else { &day.0 }, "");
-                let hm = Backup::get_hours_and_minutes(&input);
-                if hm.is_none() {
-                    return Err(Error::InvalidWhenConfiguration(String::from(
-                        "Unable to find hours:minutes",
-                    )));
-                }
-                let hm = hm.unwrap();
-                let input = input.replace(&format!("{:02}:{:02}", hm.0, hm.1), "");
-                let input = input.trim();
-                if !["", "weekly"].contains(&input) {
-                    return Err(Error::InvalidWhenConfiguration(format!(
-                        "Expected to consume all the when string, unable to parse \
-                        remaining part: {}",
-                        input
-                    )));
-                }
-                let day = Weekday::from_str(&day.0).unwrap().number_from_monday();
-
-                // sec   min   hour   day of month   month   day of week
-                return Ok(format!("{} {} {} {} {} {}", 0, hm.1, hm.0, "*", "*", day));
-            }
-        }
-        Err(Error::InvalidWhenConfiguration(String::from(
-            "Unable to find any weekday identifier",
-        )))
-    }
-
-    fn parse_monthly(input: &str) -> Result<String, Error> {
-        // Monthly 1 12:40
-        let monthly = "monthly";
-        if input.contains(monthly) {
-            let input = input.replace(monthly, "");
-            let hm = Backup::get_hours_and_minutes(&input);
-            if hm.is_none() {
-                return Err(Error::InvalidWhenConfiguration(String::from(
-                    "Unable to find hours:minutes",
-                )));
-            }
-            let hm = hm.unwrap();
-            let input = input.replace(&format!("{:02}:{:02}", hm.0, hm.1), "");
-            let input = input.trim();
-            // Input should now contain only the "day of the month"
-
-            let day: i8 = match input.parse() {
-                Ok(day) => day,
-                Err(error) => {
-                    return Err(Error::InvalidWhenConfiguration(format!(
-                        "Unable to correctly parse the string for the day of the month. \
-                        Given input: {}. Error: {}",
-                        input, error
-                    )))
-                }
-            };
-
-            let valid_days = 1..32;
-            if !valid_days.contains(&day) {
-                return Err(Error::InvalidWhenConfiguration(String::from(
-                    "Invalid day of the month specified, out of range [1,31]",
-                )));
-            }
-
-            // sec   min   hour   day of month   month   day of week
-            return Ok(format!("{} {} {} {} {} {}", 0, hm.1, hm.0, day, "*", "*"));
-        }
-        Err(Error::InvalidWhenConfiguration(String::from(
-            "Unable to find monthly identifier",
-        )))
-    }
-
-    fn parse_when(when: &str) -> Result<String, Error> {
-        // sec   min   hour   day of month   month   day of week
-        // *     *     *      *              *       *
-        let input = when.to_lowercase();
-        let daily = Backup::parse_daily(&input);
-        if daily.is_ok() {
-            return daily;
-        }
-
-        let monthly = Backup::parse_monthly(&input);
-        if monthly.is_ok() {
-            return monthly;
-        }
-
-        let weekly = Backup::parse_weekly(&input);
-        if weekly.is_ok() {
-            return weekly;
-        }
-
-        Err(Error::InvalidWhenConfiguration(format!(
-            "Unable to parse for:\n\
-        Daily: {}\n
-        Weekly: {}\n
-        Monthly: {}",
-            daily.unwrap_err(),
-            weekly.unwrap_err(),
-            monthly.unwrap_err()
-        )))
-    }
-    pub async fn new(
-        name: &str,
-        remote: Box<dyn remote::Remote + Send + Sync>,
-        service: Box<dyn Service + Send + Sync>,
-        config: &BackupConfig,
-    ) -> Result<Backup, Error> {
-        let when_to_schedule = Backup::parse_when(&config.when);
-        let to_parse: &str;
-        let parsable: String;
-        if let Ok(value) = when_to_schedule {
-            parsable = value;
-            to_parse = &parsable;
-        } else {
-            to_parse = &config.when;
-        };
-
-        let schedule = cron::Schedule::from_str(to_parse);
-        if schedule.is_err() {
-            return Err(Error::InvalidCronConfiguration(schedule.err().unwrap()));
-        };
-
-        Ok(Backup {
-            name: String::from(name),
-            what: service,
-            r#where: remote,
-            remote_path: PathBuf::from(config.remote_path.clone()),
-            when: config.when.clone(),
-            compress: config.compress,
-            schedule: schedule.unwrap(),
-            keep_last: config.keep_last,
-        })
     }
 
     pub async fn schedule(
@@ -490,7 +319,7 @@ mod tests {
     use croner::Cron;
 
     fn validate_cron_expression(when: &str) {
-        let result = Backup::parse_when(when);
+        let result = when::parse_when(when);
         assert!(
             result.is_ok(),
             "Failed to parse when string '{}': {}",
@@ -516,11 +345,11 @@ mod tests {
         validate_cron_expression("DAILY 11:11");
 
         // Invalid cases
-        assert!(Backup::parse_when("dayly 00:00").is_err());
-        assert!(Backup::parse_when("daily 55:00").is_err());
-        assert!(Backup::parse_when("daily 00:61").is_err());
-        assert!(Backup::parse_when("daily 00:60").is_err());
-        assert!(Backup::parse_when("daily 24:01").is_err());
+        assert!(when::parse_when("dayly 00:00").is_err());
+        assert!(when::parse_when("daily 55:00").is_err());
+        assert!(when::parse_when("daily 00:61").is_err());
+        assert!(when::parse_when("daily 00:60").is_err());
+        assert!(when::parse_when("daily 24:01").is_err());
     }
 
     #[test]
@@ -544,13 +373,13 @@ mod tests {
         validate_cron_expression(" sunday 12:30");
 
         // Invalid cases
-        assert!(Backup::parse_when("watly monzay 00:00").is_err());
-        assert!(Backup::parse_when("monzay 00:00").is_err());
-        assert!(Backup::parse_when("Moonday 00:00").is_err());
-        assert!(Backup::parse_when("Sundays 1:00").is_err());
-        assert!(Backup::parse_when("Today 00:00").is_err());
-        assert!(Backup::parse_when("Tomorrow 00:00").is_err());
-        assert!(Backup::parse_when("Toyota -1:00").is_err());
+        assert!(when::parse_when("watly monzay 00:00").is_err());
+        assert!(when::parse_when("monzay 00:00").is_err());
+        assert!(when::parse_when("Moonday 00:00").is_err());
+        assert!(when::parse_when("Sundays 1:00").is_err());
+        assert!(when::parse_when("Today 00:00").is_err());
+        assert!(when::parse_when("Tomorrow 00:00").is_err());
+        assert!(when::parse_when("Toyota -1:00").is_err());
     }
 
     #[test]
@@ -560,9 +389,9 @@ mod tests {
         validate_cron_expression("Monthly 31 02:30");
 
         // Invalid cases
-        assert!(Backup::parse_when("Monthly 00:00").is_err());
-        assert!(Backup::parse_when("Monthtly -1 00:00").is_err());
-        assert!(Backup::parse_when("Monthtly 0 00:00").is_err());
-        assert!(Backup::parse_when("Monthtly 32 00:00").is_err());
+        assert!(when::parse_when("Monthly 00:00").is_err());
+        assert!(when::parse_when("Monthtly -1 00:00").is_err());
+        assert!(when::parse_when("Monthtly 0 00:00").is_err());
+        assert!(when::parse_when("Monthtly 32 00:00").is_err());
     }
 }
