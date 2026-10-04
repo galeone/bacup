@@ -14,3 +14,9 @@ config.toml
 
 # IDE stuff
 .vscode/
+
+# macOS
+.DS_Store
+
+# Editor swap files
+*.swp
