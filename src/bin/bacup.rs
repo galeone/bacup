@@ -217,14 +217,14 @@ async fn main() -> Result<(), i32> {
         None => warn!("No Docker to backup."),
     }
 
+    let mut zfs_compression: HashMap<String, String> = HashMap::new();
     match config.zfs {
         Some(zfs) => {
             for (service_name, instance_config) in zfs {
                 let key = format!("zfs.{}", service_name);
-                services.insert(
-                    key,
-                    Box::new(Zfs::new(&instance_config, &service_name).await.unwrap()),
-                );
+                let service = Zfs::new(&instance_config, &service_name).await.unwrap();
+                zfs_compression.insert(service_name, service.compression().to_string());
+                services.insert(key, Box::new(service));
             }
         }
         None => warn!("No Zfs to backup."),
@@ -265,6 +265,27 @@ async fn main() -> Result<(), i32> {
                 .unwrap(),
             ),
         );
+        // The dump is produced with `zfs send -c -L`: on a compressed dataset
+        // the stream is already compressed, so gzip at upload is wasted CPU.
+        if let Some(compression) = config
+            .what
+            .strip_prefix("zfs.")
+            .and_then(|service_name| zfs_compression.get(service_name))
+            .filter(|compression| **compression != "off")
+        {
+            if config.compress {
+                warn!(
+                    "Backup {}: dataset is compressed ({compression}) but compress = true: gzip wastes CPU without size gain, consider compress = false",
+                    backup_name
+                );
+            } else {
+                info!(
+                    "Backup {}: dataset is compressed ({compression}): compress = false is the right choice",
+                    backup_name
+                );
+            }
+        }
+
         info!("Backup {} -> {} configured", config.what, config.r#where);
     }
 

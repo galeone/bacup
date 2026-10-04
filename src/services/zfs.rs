@@ -249,6 +249,7 @@ pub struct Zfs {
     dataset: String,
     snapshot_base: String,
     full_when: Option<Cron>,
+    compression: String,
 }
 
 /// Parses a schedule expression, accepting the human friendly formats of
@@ -408,11 +409,6 @@ impl Zfs {
         let compression = String::from_utf8_lossy(&compress_output.stdout)
             .trim()
             .to_string();
-        if compression != "off" {
-            info!(
-                "dataset {dataset} is compressed ({compression}): the zfs dump is already compressed, consider compress = false for its backups"
-            );
-        }
 
         debug!("new zfs service on {dataset} (snapshot base {snapshot_base})");
         Ok(Zfs {
@@ -421,7 +417,15 @@ impl Zfs {
             dataset: dataset.clone(),
             snapshot_base: snapshot_base.clone(),
             full_when,
+            compression,
         })
+    }
+
+    /// Value of the dataset's `compression` property (`off`, `zstd`, ...).
+    /// With `zfs send -c -L`, a non-`off` value means the dump stream is
+    /// already compressed and gzip'ing it at upload is wasted CPU.
+    pub fn compression(&self) -> &str {
+        &self.compression
     }
 
     /// List all snapshots of our chain on the dataset tree, including those
