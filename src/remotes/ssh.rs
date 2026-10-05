@@ -215,7 +215,7 @@ impl Ssh {
                     config.username,
                     config.host,
                     config.port,
-                    status.code().unwrap(),
+                    status,
                 ))));
             }
         }

@@ -395,7 +395,11 @@ impl remote::Remote for AwsBucket {
     ) -> Result<(), remote::Error> {
         let tot = paths.len();
 
-        let mut local_prefix = paths.iter().min_by(|a, b| a.cmp(b)).unwrap();
+        let Some(mut local_prefix) = paths.iter().min_by(|a, b| a.cmp(b)) else {
+            return Err(remote::Error::LocalError(io::Error::other(
+                "no paths to upload",
+            )));
+        };
         // The local_prefix found is the shortest path inside the folder we want to backup.
 
         // If it is a folder, we of course don't want to consider this a prefix, but its parent.
@@ -409,7 +413,17 @@ impl remote::Remote for AwsBucket {
         // Strip local prefix from remote paths
         let mut remote_paths: Vec<PathBuf> = Vec::with_capacity(tot);
         for path in paths.iter() {
-            remote_paths.push(remote_path.join(path.strip_prefix(local_prefix).unwrap()));
+            match path.strip_prefix(local_prefix) {
+                Ok(stripped) => remote_paths.push(remote_path.join(stripped)),
+                Err(error) => {
+                    return Err(remote::Error::LocalError(io::Error::other(format!(
+                        "path {} is not under prefix {}: {}",
+                        path.display(),
+                        local_prefix.display(),
+                        error
+                    ))))
+                }
+            }
         }
 
         // Upload all the files one by one

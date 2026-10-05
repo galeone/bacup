@@ -67,14 +67,14 @@ impl Docker {
             .stdout(Stdio::null())
             .status()
             .await;
-        if status.is_err() {
-            return Err(Error::RuntimeError(status.err().unwrap()));
-        }
-        let code = status.unwrap().code().unwrap();
-        if code != 0 {
+        let status = match status {
+            Err(error) => return Err(Error::RuntimeError(error)),
+            Ok(status) => status,
+        };
+        if !status.success() {
             return Err(Error::RuntimeError(io::Error::other(format!(
-                "docker info failed (is the docker daemon running and accessible?), exit code {}",
-                code
+                "docker info failed (is the docker daemon running and accessible?), {}",
+                status
             ))));
         }
 
@@ -138,10 +138,10 @@ impl Service for Docker {
         match status.success() {
             true => Ok(Dump { path: Some(dest) }),
             false => Err(Error::RuntimeError(io::Error::other(format!(
-                "{} {:?} failed with exit code {}",
+                "{} {:?} failed, {}",
                 self.cmd.display(),
                 self.args,
-                status.code().unwrap()
+                status
             )))
             .into()),
         }

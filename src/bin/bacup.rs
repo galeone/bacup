@@ -119,11 +119,16 @@ async fn main() -> Result<(), i32> {
     match config.aws {
         Some(aws) => {
             for (bucket_name, bucket_config) in aws {
-                remotes.insert(
-                    format!("aws.{}", bucket_name),
-                    Box::new(AwsBucket::new(bucket_config, &bucket_name).await.unwrap()),
-                );
-                info!("Remote aws.{} configured", bucket_name);
+                match AwsBucket::new(bucket_config, &bucket_name).await {
+                    Ok(remote) => {
+                        remotes.insert(format!("aws.{}", bucket_name), Box::new(remote));
+                        info!("Remote aws.{} configured", bucket_name);
+                    }
+                    Err(error) => {
+                        error!("Failed to configure remote aws.{}: {:?}", bucket_name, error);
+                        return Err(-1);
+                    }
+                }
             }
         }
         None => warn!("No AWS cloud configured."),
@@ -132,11 +137,16 @@ async fn main() -> Result<(), i32> {
     match config.ssh {
         Some(host) => {
             for (hostname, config) in host {
-                remotes.insert(
-                    format!("ssh.{}", hostname),
-                    Box::new(Ssh::new(config, &hostname).await.unwrap()),
-                );
-                info!("Remote ssh.{} configured", hostname);
+                match Ssh::new(config, &hostname).await {
+                    Ok(remote) => {
+                        remotes.insert(format!("ssh.{}", hostname), Box::new(remote));
+                        info!("Remote ssh.{} configured", hostname);
+                    }
+                    Err(error) => {
+                        error!("Failed to configure remote ssh.{}: {}", hostname, error);
+                        return Err(-1);
+                    }
+                }
             }
         }
         None => warn!("No Ssh remotes configured."),
@@ -145,11 +155,16 @@ async fn main() -> Result<(), i32> {
     match config.localhost {
         Some(host) => {
             for (name, config) in host {
-                remotes.insert(
-                    format!("localhost.{}", name),
-                    Box::new(Localhost::new(config, &name).unwrap()),
-                );
-                info!("Remote localhost.{} configured", name);
+                match Localhost::new(config, &name) {
+                    Ok(remote) => {
+                        remotes.insert(format!("localhost.{}", name), Box::new(remote));
+                        info!("Remote localhost.{} configured", name);
+                    }
+                    Err(error) => {
+                        error!("Failed to configure remote localhost.{}: {}", name, error);
+                        return Err(-1);
+                    }
+                }
             }
         }
         None => warn!("No localhost remotes configured."),
@@ -158,11 +173,16 @@ async fn main() -> Result<(), i32> {
     match config.git {
         Some(host) => {
             for (name, config) in host {
-                remotes.insert(
-                    format!("git.{}", name),
-                    Box::new(Git::new(config, &name).await.unwrap()),
-                );
-                info!("Remote git.{} configured", name);
+                match Git::new(config, &name).await {
+                    Ok(remote) => {
+                        remotes.insert(format!("git.{}", name), Box::new(remote));
+                        info!("Remote git.{} configured", name);
+                    }
+                    Err(error) => {
+                        error!("Failed to configure remote git.{}: {}", name, error);
+                        return Err(-1);
+                    }
+                }
             }
         }
         None => warn!("No Git remotes configured."),
@@ -183,7 +203,15 @@ async fn main() -> Result<(), i32> {
         Some(folders) => {
             for (location_name, folder) in folders {
                 let key = format!("folders.{}", location_name);
-                services.insert(key, Box::new(Folder::new(&folder.pattern).await.unwrap()));
+                match Folder::new(&folder.pattern).await {
+                    Ok(service) => {
+                        services.insert(key, Box::new(service));
+                    }
+                    Err(error) => {
+                        error!("Failed to configure service folders.{}: {}", location_name, error);
+                        return Err(-1);
+                    }
+                }
             }
         }
         None => warn!("No folders to backup."),
@@ -192,14 +220,15 @@ async fn main() -> Result<(), i32> {
         Some(postgres) => {
             for (service_name, instance_config) in postgres {
                 let key = format!("postgres.{}", service_name);
-                services.insert(
-                    key,
-                    Box::new(
-                        PostgreSql::new(instance_config, &service_name)
-                            .await
-                            .unwrap(),
-                    ),
-                );
+                match PostgreSql::new(instance_config, &service_name).await {
+                    Ok(service) => {
+                        services.insert(key, Box::new(service));
+                    }
+                    Err(error) => {
+                        error!("Failed to configure service postgres.{}: {}", service_name, error);
+                        return Err(-1);
+                    }
+                }
             }
         }
         None => warn!("No PostgreSql to backup."),
@@ -208,10 +237,15 @@ async fn main() -> Result<(), i32> {
         Some(docker) => {
             for (service_name, instance_config) in docker {
                 let key = format!("docker.{}", service_name);
-                services.insert(
-                    key,
-                    Box::new(Docker::new(instance_config, &service_name).await.unwrap()),
-                );
+                match Docker::new(instance_config, &service_name).await {
+                    Ok(service) => {
+                        services.insert(key, Box::new(service));
+                    }
+                    Err(error) => {
+                        error!("Failed to configure service docker.{}: {}", service_name, error);
+                        return Err(-1);
+                    }
+                }
             }
         }
         None => warn!("No Docker to backup."),
@@ -222,9 +256,17 @@ async fn main() -> Result<(), i32> {
         Some(zfs) => {
             for (service_name, instance_config) in zfs {
                 let key = format!("zfs.{}", service_name);
-                let service = Zfs::new(&instance_config, &service_name).await.unwrap();
-                zfs_compression.insert(service_name, service.compression().to_string());
-                services.insert(key, Box::new(service));
+                match Zfs::new(&instance_config, &service_name).await {
+                    Ok(service) => {
+                        zfs_compression.insert(service_name, service.compression().to_string());
+                        services.insert(key, Box::new(service));
+                    }
+
+                    Err(error) => {
+                        error!("Failed to configure service zfs.{}: {}", service_name, error);
+                        return Err(-1);
+                    }
+                }
             }
         }
         None => warn!("No Zfs to backup."),
@@ -252,19 +294,21 @@ async fn main() -> Result<(), i32> {
             return Err(-1);
         }
 
-        backup.insert(
-            backup_name.clone(),
-            Arc::new(
-                Backup::new(
-                    &backup_name,
-                    dyn_clone::clone_box(&*remotes[&config.r#where]),
-                    dyn_clone::clone_box(&*services[&config.what]),
-                    &config,
-                )
-                .await
-                .unwrap(),
-            ),
-        );
+        let backup_entry = match Backup::new(
+            &backup_name,
+            dyn_clone::clone_box(&*remotes[&config.r#where]),
+            dyn_clone::clone_box(&*services[&config.what]),
+            &config,
+        )
+        .await
+        {
+            Ok(backup) => Arc::new(backup),
+            Err(error) => {
+                error!("Failed to configure backup {}: {}", backup_name, error);
+                return Err(-1);
+            }
+        };
+        backup.insert(backup_name.clone(), backup_entry);
         // The dump is produced with `zfs send -c -L`: on a compressed dataset
         // the stream is already compressed, so gzip at upload is wasted CPU.
         if let Some(compression) = config
@@ -289,11 +333,17 @@ async fn main() -> Result<(), i32> {
         info!("Backup {} -> {} configured", config.what, config.r#where);
     }
 
-    let mut scheduler = JobScheduler::new().await.unwrap();
+    let Ok(mut scheduler) = JobScheduler::new().await else {
+        error!("Unable to create the job scheduler");
+        return Err(-1);
+    };
     // scheduler.shutdown_on_ctrl_c();
 
     for (name, job) in backup {
-        let upcoming = job.schedule.upcoming(chrono::Utc).take(1).next().unwrap();
+        let Some(upcoming) = job.schedule.upcoming(chrono::Utc).take(1).next() else {
+            error!("Backup {}: no upcoming run in schedule", name);
+            return Err(-1);
+        };
         let schedule = job.schedule.clone();
         let res = job.schedule(&mut scheduler, schedule).await;
 

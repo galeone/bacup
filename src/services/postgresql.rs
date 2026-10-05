@@ -78,14 +78,14 @@ impl PostgreSql {
             .stdout(Stdio::null())
             .status()
             .await;
-        if status.is_err() {
-            return Err(Error::RuntimeError(status.err().unwrap()));
-        }
-        let code = status.unwrap().code().unwrap();
-        if code != 0 {
+        let status = match status {
+            Err(error) => return Err(Error::RuntimeError(error)),
+            Ok(status) => status,
+        };
+        if !status.success() {
             return Err(Error::RuntimeError(io::Error::other(format!(
-                "pg_isready failed, exit code {}",
-                code
+                "pg_isready failed, {}",
+                status
             ))));
         }
 
