@@ -8,6 +8,9 @@
 # Local configuration file used during development
 config.toml
 
+# Local bug-tracking notes
+BUGS.md
+
 # IDE stuff
 .vscode/
 
