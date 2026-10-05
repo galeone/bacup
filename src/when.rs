@@ -71,11 +71,19 @@ pub fn parse_weekly(input: &str) -> Result<String, String> {
             String::from(d.1).to_lowercase(),
         )
     });
+    // Match day names as whole words, not as substrings of other words.
+    let words: Vec<&str> = input.split_whitespace().collect();
     for day in weekdays {
-        let short = input.contains(&day.0);
-        let long = input.contains(&day.1);
+        let short = words.contains(&day.0.as_str());
+        let long = words.contains(&day.1.as_str());
         if short || long {
-            let input = input.replace(if long { &day.1 } else { &day.0 }, "");
+            let word = if long { &day.1 } else { &day.0 };
+            let input = words
+                .iter()
+                .filter(|w| *w != word)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" ");
             let hm = get_hours_and_minutes(&input);
             if hm.is_none() {
                 return Err(String::from("Unable to find hours:minutes"));

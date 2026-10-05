@@ -36,6 +36,8 @@ use async_trait::async_trait;
 use std::process::{Command, Stdio};
 use which::which;
 
+use base64::Engine;
+
 #[derive(Debug)]
 pub enum Error {
     InvalidPrivateKey(String),
@@ -65,6 +67,50 @@ impl fmt::Display for Error {
             Error::RuntimeError(error) => write!(f, "Error while reading/writing: {}", error),
         }
     }
+}
+
+/// Detect passphrase-encrypted private keys in the modern OpenSSH format
+/// (`openssh-key-v1`), which unlike legacy PEM keys has no `Proc-Type`/
+/// `ENCRYPTED` header. The cipher name right after the key magic is `none`
+/// for unencrypted keys and a cipher name (e.g. `aes256-ctr`) otherwise.
+fn openssh_key_is_encrypted(key: &str) -> bool {
+    const BEGIN: &str = "-----BEGIN OPENSSH PRIVATE KEY-----";
+    const END: &str = "-----END OPENSSH PRIVATE KEY-----";
+    let Some(start) = key.find(BEGIN) else {
+        return false;
+    };
+    let rest = &key[start + BEGIN.len()..];
+    let Some(end) = rest.find(END) else {
+        return false;
+    };
+    let b64: String = rest[..end]
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '+' || *c == '/')
+        .collect();
+    let Ok(bytes) = base64::engine::general_purpose::STANDARD_NO_PAD.decode(b64.as_bytes())
+    else {
+        return false;
+    };
+    // openssh-key-v1 layout: uint32 len, magic, uint32 len, ciphername, ...
+    let read_u32 = |bytes: &[u8], pos: usize| -> Option<u32> {
+        bytes
+            .get(pos..pos + 4)
+            .map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+    };
+    let Some(magic_len) = read_u32(&bytes, 0).map(|v| v as usize) else {
+        return false;
+    };
+    if bytes.len() < 4 + magic_len || &bytes[4..4 + magic_len] != b"openssh-key-v1" {
+        return false;
+    }
+    let Some(cipher_len) = read_u32(&bytes, 4 + magic_len).map(|v| v as usize) else {
+        return false;
+    };
+    let pos = 4 + magic_len + 4;
+    if bytes.len() < pos + cipher_len {
+        return false;
+    }
+    bytes[pos..pos + cipher_len] != *b"none"
 }
 
 /// Quote a value for use inside a remote shell command (POSIX single-quoting).
@@ -102,6 +148,15 @@ impl Ssh {
                 private_key.display()
             )));
         }
+        // Modern OpenSSH keys ("openssh-key-v1") have no Proc-Type header;
+        // detect encryption from the cipher name in the key blob.
+        if openssh_key_is_encrypted(&private_key_file) {
+            return Err(Error::InvalidPrivateKey(format!(
+                "Private key {} is encrypted with a passphrase. \
+                            A key without passphrase is required",
+                private_key.display()
+            )));
+        }
 
         let port = format!("{}", config.port);
         let host = format!("{}@{}", config.username, config.host);
@@ -119,8 +174,11 @@ impl Ssh {
         }
 
         let output = output.unwrap();
-        let stdout = String::from_utf8(output.stdout).unwrap();
-        let stderr = String::from_utf8(output.stderr).unwrap();
+        // Process output is arbitrary bytes (locale-dependent remote
+        // banners/messages) — display it lossy rather than panicking on
+        // non-UTF8.
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
         if stdout.is_empty() && stderr.contains("true") {
             // like on github.com -> can connect, can't execute anything on the shell
@@ -437,5 +495,63 @@ impl remote::Remote for Ssh {
 
         self.upload_file(compressed_folder.path(), &remote_path)
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_openssh_key(cipher: &[u8]) -> String {
+        // Minimal openssh-key-v1 blob: magic + cipher name. The parser only
+        // reads up to the cipher name, so the rest of the structure is not
+        // needed.
+        let magic = b"openssh-key-v1";
+        let mut blob = vec![];
+        blob.extend_from_slice(&(magic.len() as u32).to_be_bytes());
+        blob.extend_from_slice(magic);
+        blob.extend_from_slice(&(cipher.len() as u32).to_be_bytes());
+        blob.extend_from_slice(cipher);
+        let encoded = base64::engine::general_purpose::STANDARD_NO_PAD.encode(&blob);
+        format!(
+            "-----BEGIN OPENSSH PRIVATE KEY-----\n{encoded}\n-----END OPENSSH PRIVATE KEY-----\n"
+        )
+    }
+
+    #[test]
+    fn unencrypted_openssh_key_is_not_reported_as_encrypted() {
+        let key = make_openssh_key(b"none");
+        assert!(!openssh_key_is_encrypted(&key));
+    }
+
+    #[test]
+    fn encrypted_openssh_key_is_reported_as_encrypted() {
+        for cipher in [b"aes256-ctr", b"aes128-cbc"] {
+            let key = make_openssh_key(cipher);
+            assert!(openssh_key_is_encrypted(&key));
+        }
+    }
+
+    #[test]
+    fn legacy_pem_keys_are_out_of_scope() {
+        // Legacy PEM (with or without the Proc-Type/ENCRYPTED header) has no
+        // OPENSSH block: the Proc-Type check in new() covers that format.
+        let pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIE...\n-----END RSA PRIVATE KEY-----\n";
+        assert!(!openssh_key_is_encrypted(pem));
+        let encrypted_pem = "Proc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC\nMIIE...";
+        assert!(!openssh_key_is_encrypted(encrypted_pem));
+    }
+
+    #[test]
+    fn malformed_openssh_blocks_are_not_reported_as_encrypted() {
+        let garbage = "-----BEGIN OPENSSH PRIVATE KEY-----\n!!!!not-base64!!!!\n-----END OPENSSH PRIVATE KEY-----\n";
+        assert!(!openssh_key_is_encrypted(garbage));
+        // Valid base64, but not an openssh-key-v1 blob.
+        let encoded =
+            base64::engine::general_purpose::STANDARD_NO_PAD.encode(b"not a key at all");
+        let not_a_key = format!(
+            "-----BEGIN OPENSSH PRIVATE KEY-----\n{encoded}\n-----END OPENSSH PRIVATE KEY-----\n"
+        );
+        assert!(!openssh_key_is_encrypted(&not_a_key));
     }
 }

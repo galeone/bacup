@@ -58,7 +58,10 @@ impl Docker {
             Ok(cmd) => cmd,
         };
 
-        let args = vec!["run", "--rm", "hello-world"];
+        // `docker info` only talks to the local daemon: unlike
+        // `docker run hello-world` it doesn't pull an image or need
+        // network access.
+        let args = vec!["info"];
         let status = Command::new(&cmd)
             .args(&args)
             .stdout(Stdio::null())
@@ -70,7 +73,7 @@ impl Docker {
         let code = status.unwrap().code().unwrap();
         if code != 0 {
             return Err(Error::RuntimeError(io::Error::other(format!(
-                "docker run hello-world failed, exit code {}",
+                "docker info failed (is the docker daemon running and accessible?), exit code {}",
                 code
             ))));
         }

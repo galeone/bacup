@@ -23,9 +23,6 @@ use crate::remotes::remote;
 
 use std::path::{Path, PathBuf};
 
-use tokio::fs::File;
-use tokio::io::AsyncReadExt;
-
 use async_trait::async_trait;
 
 use log::{info, warn};
@@ -119,17 +116,17 @@ impl Bucket {
         );
 
         if file_size <= CHUNK_SIZE {
-            // Just read the file and upload to bytes.
-            // Suppose CHUNK_SIZE free memory available.
-            let mut content: Vec<u8> = vec![];
-            let mut file = File::open(path).await?;
-            file.read_to_end(&mut content).await?;
+            // Stream the file directly instead of buffering it in memory;
+            // ByteStream::from_path sets Content-Length from file metadata.
+            let body = ByteStream::from_path(path)
+                .await
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
             let response = self
                 .client
                 .put_object()
                 .bucket(&self.bucket_name)
                 .key(remote_path)
-                .body(ByteStream::from(content))
+                .body(body)
                 .send()
                 .await;
 

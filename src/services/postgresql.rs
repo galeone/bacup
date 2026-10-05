@@ -31,6 +31,7 @@ pub struct PostgreSql {
     pub cmd: PathBuf,
     pub args: Vec<String>,
     pub dumped_to: PathBuf,
+    pub password: Option<String>,
 }
 
 #[derive(Debug)]
@@ -96,21 +97,37 @@ impl PostgreSql {
         };
 
         args.push("-tAc");
-        let query = format!(r#"SELECT 1 FROM pg_database WHERE datname='{}'"#, db_name);
+        // Escape single quotes so a database name like o'reilly can't break
+        // out of the string literal in the query.
+        let query = format!(
+            "SELECT 1 FROM pg_database WHERE datname='{}'",
+            db_name.replace('\'', "''")
+        );
         args.push(&query);
 
-        let output = match Command::new(cmd).args(&args).output().await {
+        let mut psql = Command::new(cmd);
+        psql.args(&args);
+        if let Some(password) = &config.password {
+            psql.env("PGPASSWORD", password);
+        }
+        let output = match psql.output().await {
             Err(error) => return Err(Error::RuntimeError(error)),
             Ok(output) => output,
         };
 
-        let stderr = std::str::from_utf8(&output.stderr).unwrap().trim();
-        if !stderr.is_empty() {
-            return Err(Error::RuntimeError(io::Error::other(stderr)));
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        // Fail on exit status, not on any stderr output: psql exits non-zero
+        // on connection/auth failures, while harmless warnings (e.g. locale)
+        // can appear on stderr with a successful run.
+        if !output.status.success() {
+            return Err(Error::RuntimeError(io::Error::other(format!(
+                "psql connection check failed: {}",
+                if stderr.is_empty() { "unknown error".to_string() } else { stderr }
+            ))));
         }
 
-        let stdout = std::str::from_utf8(&output.stdout).unwrap().trim();
-        if stdout == "0" {
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if stdout != "1" {
             return Err(Error::RuntimeError(io::Error::other(format!(
                 "database {} does not exist or user {} not allowed to query the db",
                 db_name, username
@@ -135,6 +152,7 @@ impl PostgreSql {
             args: args.iter().map(|s| s.to_string()).collect(),
             cmd,
             dumped_to: PathBuf::new(),
+            password: config.password.clone(),
         })
     }
 }
@@ -165,12 +183,16 @@ impl Service for PostgreSql {
             .into());
         }
 
-        match Command::new(self.cmd.clone())
-            .args(
-                self.args
-                    .iter()
-                    .chain(&["-f".to_string(), dest.to_str().unwrap().to_string()]),
-            )
+        let mut command = Command::new(self.cmd.clone());
+        command.args(
+            self.args
+                .iter()
+                .chain(&["-f".to_string(), dest.to_str().unwrap().to_string()]),
+        );
+        if let Some(password) = &self.password {
+            command.env("PGPASSWORD", password);
+        }
+        match command
             .status()
             .await
         {
@@ -203,6 +225,7 @@ mod tests {
             db_name: String::from(DB_NAME),
             host: Some(String::from(HOST)),
             port: Some(PORT),
+            password: None,
         };
         assert!(PostgreSql::new(config, NAME).await.is_ok());
     }
@@ -214,6 +237,7 @@ mod tests {
             db_name: String::from(DB_NAME),
             host: Some(String::from(HOST)),
             port: Some(PORT),
+            password: None,
         };
         assert!(PostgreSql::new(config, NAME).await.is_err());
     }
@@ -225,6 +249,7 @@ mod tests {
             db_name: String::from("wat"),
             host: Some(String::from(HOST)),
             port: Some(PORT),
+            password: None,
         };
         assert!(PostgreSql::new(config, NAME).await.is_err());
     }
@@ -236,6 +261,7 @@ mod tests {
             db_name: String::from(DB_NAME),
             host: Some(String::from("wat")),
             port: Some(PORT),
+            password: None,
         };
         assert!(PostgreSql::new(config, NAME).await.is_err());
     }
@@ -247,6 +273,7 @@ mod tests {
             db_name: String::from(DB_NAME),
             host: Some(String::from(HOST)),
             port: Some(69),
+            password: None,
         };
         assert!(PostgreSql::new(config, NAME).await.is_err());
     }
@@ -259,6 +286,7 @@ mod tests {
             db_name: String::from(DB_NAME),
             host: Some(String::from(HOST)),
             port: Some(PORT),
+            password: None,
         };
 
         let db = PostgreSql::new(config, NAME).await.unwrap();

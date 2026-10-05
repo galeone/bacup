@@ -58,6 +58,11 @@ pub struct PostgreSqlConfig {
     pub db_name: String,
     pub host: Option<String>,
     pub port: Option<u16>,
+    /// Optional password, passed to psql/pg_dump via the `PGPASSWORD`
+    /// environment variable (libpq). When absent, pg_dump runs with
+    /// `--no-password` and relies on peer/trust authentication.
+    #[serde(default)]
+    pub password: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]

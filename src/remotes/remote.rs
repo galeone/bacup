@@ -69,7 +69,7 @@ impl fmt::Display for Error {
             Error::CompressionError => write!(f, "Unable to compress the file/folder"),
             Error::NotADirectory => write!(f, "The specified file is not a directory"),
             Error::RemoteError(error) => write!(f, "Remote error: {:?}", error),
-            Error::StorageError(error) => write!(f, "Storagee error: {:?}", error),
+            Error::StorageError(error) => write!(f, "Storage error: {:?}", error),
         }
     }
 }
