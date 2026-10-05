@@ -287,12 +287,16 @@ mod tests {
             .await
             .unwrap();
 
-        let now: chrono::DateTime<chrono::Utc> = chrono::Utc::now();
-        let dest = tmp_dir
-            .path()
-            .join(format!("{}-Cargo.toml.gz", now.format("%Y-%m-%d-%H.%M.%S"),));
+        // The archive name carries the upload time, so assert on the single
+        // matching file rather than on a name computed after the fact (the
+        // clock can roll over during the upload).
+        let matching: Vec<_> = std::fs::read_dir(tmp_dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with("-Cargo.toml.gz"))
+            .collect();
 
-        assert!(dest.exists());
+        assert_eq!(matching.len(), 1);
     }
 
     #[tokio::test]
@@ -347,13 +351,19 @@ mod tests {
             .await
             .unwrap();
 
-        let now: chrono::DateTime<chrono::Utc> = chrono::Utc::now();
-        let dest = tmp_dir.path().join(format!(
-            "{}-{}.tar.gz",
-            now.format("%Y-%m-%d-%H.%M.%S"),
-            remote_filename
-        ));
+        // The archive name carries the upload time, so assert on the single
+        // matching file rather than on a name computed after the fact (the
+        // clock can roll over during the upload).
+        let matching: Vec<_> = std::fs::read_dir(tmp_dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .ends_with(&format!("-{remote_filename}.tar.gz"))
+            })
+            .collect();
 
-        assert!(dest.exists());
+        assert_eq!(matching.len(), 1);
     }
 }

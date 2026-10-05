@@ -38,10 +38,6 @@ pub(crate) enum SnapshotKind {
     Full,
     /// An incremental snapshot taken against a previous snapshot.
     Incremental,
-    /// A snapshot taken by a bacup version without full/incremental naming.
-    /// Legacy snapshots count as valid bases for incrementals and are
-    /// cleaned up like any other of our snapshots.
-    Legacy,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -56,19 +52,18 @@ pub(crate) struct Snapshot {
 
 /// Parse a `zfs list` snapshot name (e.g. `tank/data@snap-inc-20260101-010000`)
 /// into a [Snapshot] if it belongs to the snapshot chain rooted at
-/// `snapshot_base`, i.e. it is named `<base>-full-<ts>`, `<base>-inc-<ts>`
-/// (new style) or `<base>-<ts>` (legacy style). Returns `None` for names that
-/// do not belong to this chain.
+/// `snapshot_base`, i.e. it is named `<base>-full-<ts>` or `<base>-inc-<ts>`.
+/// Returns `None` for names that do not belong to this chain.
 pub(crate) fn parse_snapshot(name: &str, snapshot_base: &str) -> Option<Snapshot> {
     let after_at = name.split('@').nth(1)?;
     let rest = after_at.strip_prefix(snapshot_base)?.strip_prefix('-')?;
-    let (kind, ts) = if let Some(ts) = rest.strip_prefix(&format!("{FULL_MARK}-")) {
-        (SnapshotKind::Full, ts)
-    } else if let Some(ts) = rest.strip_prefix(&format!("{INC_MARK}-")) {
-        (SnapshotKind::Incremental, ts)
-    } else {
-        (SnapshotKind::Legacy, rest)
-    };
+    let (kind, ts) = rest
+        .strip_prefix(&format!("{FULL_MARK}-"))
+        .map(|ts| (SnapshotKind::Full, ts))
+        .or_else(|| {
+            rest.strip_prefix(&format!("{INC_MARK}-"))
+                .map(|ts| (SnapshotKind::Incremental, ts))
+        })?;
     let naive = NaiveDateTime::parse_from_str(ts, TS_FORMAT).ok()?;
     let time = DateTime::from_naive_utc_and_offset(naive, Utc);
     Some(Snapshot {
@@ -90,9 +85,6 @@ pub(crate) fn dump_file_name(name: &str, kind: SnapshotKind, ts: &str) -> String
     let mark = match kind {
         SnapshotKind::Full => FULL_MARK,
         SnapshotKind::Incremental => INC_MARK,
-        // Legacy snapshots are never created; their dump files use the
-        // legacy file name `<name>.snapshot` directly.
-        SnapshotKind::Legacy => return format!("{name}{SNAPSHOT_EXT}"),
     };
     format!("{name}-{mark}-{ts}{SNAPSHOT_EXT}")
 }
@@ -582,8 +574,8 @@ impl Zfs {
         })
     }
 
-    /// List the dump files this service should upload: the newest new-style
-    /// dump file (or the legacy `<name>.snapshot` if none exists yet).
+    /// List the dump file to upload: the newest `<name>-{full,inc}-<ts>.snapshot`
+    /// dump file, if any.
     async fn list_files(&self) -> Vec<PathBuf> {
         let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let mut entries = vec![];
@@ -619,10 +611,6 @@ impl Zfs {
 
         if let Some(snap) = newest {
             entries.push(current_dir.join(snap.name));
-        } else if let Ok(legacy) = fs::metadata(format!("{}{SNAPSHOT_EXT}", self.name)).await {
-            if legacy.is_file() {
-                entries.push(current_dir.join(format!("{}{SNAPSHOT_EXT}", self.name)));
-            }
         }
 
         entries
@@ -746,9 +734,9 @@ mod tests {
     }
 
     #[test]
-    fn parse_snapshot_legacy() {
-        let s = parse_snapshot("tank@snap-20251231-235959", "snap").unwrap();
-        assert_eq!(s.kind, SnapshotKind::Legacy);
+    fn parse_snapshot_rejects_unmarked() {
+        // Pre full/inc-era snapshot names are not part of our chain.
+        assert!(parse_snapshot("tank@snap-20251231-235959", "snap").is_none());
     }
 
     #[test]
@@ -890,11 +878,6 @@ mod tests {
                 SnapshotKind::Incremental,
                 "20260102",
             ),
-            snap(
-                "tank@snap-20251231-235959",
-                SnapshotKind::Legacy,
-                "20251231",
-            ),
         ];
         let cleaned = cleanup_list("tank@snap-full-20260201-010000", &snaps);
         assert_eq!(
@@ -903,7 +886,6 @@ mod tests {
                 "tank@snap-full-20260101-010000",
                 "tank@snap-inc-20260102-010000",
                 "tank/data@snap-inc-20260102-010000",
-                "tank@snap-20251231-235959",
             ]
         );
     }
