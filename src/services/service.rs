@@ -25,7 +25,11 @@ pub struct Dump {
 impl Drop for Dump {
     fn drop(&mut self) {
         if let Some(path) = &self.path {
-            // If we created a dump file, we should take care of removing it
+            // If we created a dump file, we should take care of removing it.
+            // Note: this only covers normal termination of the backup job;
+            // a crash (panic / kill) between the dump and this drop leaves
+            // the file behind — such stale files are not cleaned up by the
+            // service and must be removed manually if they appear.
             if path.exists() {
                 #[allow(unused_must_use)]
                 {

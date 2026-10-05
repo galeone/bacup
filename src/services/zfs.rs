@@ -185,21 +185,6 @@ pub(crate) fn cleanup_list(new_full_name: &str, snapshots: &[Snapshot]) -> Vec<S
         .collect()
 }
 
-/// Filter out the new-style local dump files (matching `<name>-{full,inc}-<ts>.snapshot`)
-/// older than the snapshot with name `newer_name`, i.e. the ones to remove
-/// after a new full backup. Entries that do not belong to our chain are dropped.
-pub(crate) fn old_dump_files(entries: &[String], name: &str, newer_name: &str) -> Vec<String> {
-    let Some(newer) = parse_snapshot_name(newer_name, name) else {
-        return vec![];
-    };
-    entries
-        .iter()
-        .filter_map(|e| parse_snapshot_name(e, name))
-        .filter(|s| s.time < newer.time)
-        .map(|s| s.name.clone())
-        .collect()
-}
-
 #[derive(Debug)]
 pub enum Error {
     ZfsError(std::io::Error),
@@ -641,8 +626,9 @@ fn parse_snapshot_name(file_name: &str, name: &str) -> Option<Snapshot> {
 
 impl Zfs {
     /// After a successful full: destroy all older snapshots of our chain on
-    /// the dataset tree and remove old local dump files. Best effort: failures
-    /// are logged but do not fail the backup.
+    /// the dataset tree. Best effort: failures are logged but do not fail the
+    /// backup. Local dump files are not cleaned up here: the [Dump] returned
+    /// by `do_dump` removes its own file when dropped by the backup job.
     async fn cleanup(&self, snapshots: &[Snapshot], new_full_name: &str) {
         let to_destroy = cleanup_list(new_full_name, snapshots);
         let mut destroyed = 0;
@@ -659,27 +645,6 @@ impl Zfs {
                 "destroyed {destroyed}/{} old zfs snapshot(s)",
                 to_destroy.len()
             );
-        }
-
-        let files: Vec<String> = match fs::read_dir(".").await {
-            Ok(mut read_dir) => {
-                let mut files = vec![];
-                while let Ok(Some(entry)) = read_dir.next_entry().await {
-                    files.push(entry.file_name().to_string_lossy().to_string());
-                }
-                files
-            }
-            Err(e) => {
-                warn!("failed to list local dump files for cleanup: {e}");
-                vec![]
-            }
-        };
-        for file in old_dump_files(&files, &self.name, new_full_name) {
-            match fs::remove_file(&file).await {
-                Ok(()) => info!("removed old local dump file {file}"),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => warn!("failed to remove old local dump file {file}: {e}"),
-            }
         }
     }
 }
@@ -897,25 +862,6 @@ mod tests {
         assert_eq!(s.name, "snap-inc-20260102-020000.snapshot");
         assert!(parse_snapshot_name("snap-20260102-020000.snapshot", "snap").is_none());
         assert!(parse_snapshot_name("other-full-20260102-020000.snapshot", "snap").is_none());
-    }
-
-    #[test]
-    fn old_dump_files_are_strictly_older() {
-        let entries = vec![
-            "snap-full-20260101-010000.snapshot".to_string(),
-            "snap-inc-20260101-120000.snapshot".to_string(),
-            "snap-full-20260102-010000.snapshot".to_string(), // the new full itself
-            "other-full-20260101-010000.snapshot".to_string(), // not ours
-            "readme.txt".to_string(),
-        ];
-        let old = old_dump_files(&entries, "snap", "snap-full-20260102-010000.snapshot");
-        assert_eq!(
-            old,
-            vec![
-                "snap-full-20260101-010000.snapshot".to_string(),
-                "snap-inc-20260101-120000.snapshot".to_string(),
-            ]
-        );
     }
 
     #[test]
