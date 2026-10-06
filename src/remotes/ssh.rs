@@ -87,8 +87,7 @@ fn openssh_key_is_encrypted(key: &str) -> bool {
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '+' || *c == '/')
         .collect();
-    let Ok(bytes) = base64::engine::general_purpose::STANDARD_NO_PAD.decode(b64.as_bytes())
-    else {
+    let Ok(bytes) = base64::engine::general_purpose::STANDARD_NO_PAD.decode(b64.as_bytes()) else {
         return false;
     };
     // openssh-key-v1 layout: uint32 len, magic, uint32 len, ciphername, ...
@@ -212,10 +211,7 @@ impl Ssh {
             if !status.success() {
                 return Err(Error::RuntimeError(io::Error::other(format!(
                     "ssh connection to {}@{}:{} failed with status: {}",
-                    config.username,
-                    config.host,
-                    config.port,
-                    status,
+                    config.username, config.host, config.port, status,
                 ))));
             }
         }
@@ -547,8 +543,7 @@ mod tests {
         let garbage = "-----BEGIN OPENSSH PRIVATE KEY-----\n!!!!not-base64!!!!\n-----END OPENSSH PRIVATE KEY-----\n";
         assert!(!openssh_key_is_encrypted(garbage));
         // Valid base64, but not an openssh-key-v1 blob.
-        let encoded =
-            base64::engine::general_purpose::STANDARD_NO_PAD.encode(b"not a key at all");
+        let encoded = base64::engine::general_purpose::STANDARD_NO_PAD.encode(b"not a key at all");
         let not_a_key = format!(
             "-----BEGIN OPENSSH PRIVATE KEY-----\n{encoded}\n-----END OPENSSH PRIVATE KEY-----\n"
         );

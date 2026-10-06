@@ -125,7 +125,10 @@ async fn main() -> Result<(), i32> {
                         info!("Remote aws.{} configured", bucket_name);
                     }
                     Err(error) => {
-                        error!("Failed to configure remote aws.{}: {:?}", bucket_name, error);
+                        error!(
+                            "Failed to configure remote aws.{}: {:?}",
+                            bucket_name, error
+                        );
                         return Err(-1);
                     }
                 }
@@ -208,7 +211,10 @@ async fn main() -> Result<(), i32> {
                         services.insert(key, Box::new(service));
                     }
                     Err(error) => {
-                        error!("Failed to configure service folders.{}: {}", location_name, error);
+                        error!(
+                            "Failed to configure service folders.{}: {}",
+                            location_name, error
+                        );
                         return Err(-1);
                     }
                 }
@@ -225,7 +231,10 @@ async fn main() -> Result<(), i32> {
                         services.insert(key, Box::new(service));
                     }
                     Err(error) => {
-                        error!("Failed to configure service postgres.{}: {}", service_name, error);
+                        error!(
+                            "Failed to configure service postgres.{}: {}",
+                            service_name, error
+                        );
                         return Err(-1);
                     }
                 }
@@ -242,7 +251,10 @@ async fn main() -> Result<(), i32> {
                         services.insert(key, Box::new(service));
                     }
                     Err(error) => {
-                        error!("Failed to configure service docker.{}: {}", service_name, error);
+                        error!(
+                            "Failed to configure service docker.{}: {}",
+                            service_name, error
+                        );
                         return Err(-1);
                     }
                 }
@@ -263,7 +275,10 @@ async fn main() -> Result<(), i32> {
                     }
 
                     Err(error) => {
-                        error!("Failed to configure service zfs.{}: {}", service_name, error);
+                        error!(
+                            "Failed to configure service zfs.{}: {}",
+                            service_name, error
+                        );
                         return Err(-1);
                     }
                 }

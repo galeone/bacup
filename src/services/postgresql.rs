@@ -122,7 +122,11 @@ impl PostgreSql {
         if !output.status.success() {
             return Err(Error::RuntimeError(io::Error::other(format!(
                 "psql connection check failed: {}",
-                if stderr.is_empty() { "unknown error".to_string() } else { stderr }
+                if stderr.is_empty() {
+                    "unknown error".to_string()
+                } else {
+                    stderr
+                }
             ))));
         }
 
@@ -192,10 +196,7 @@ impl Service for PostgreSql {
         if let Some(password) = &self.password {
             command.env("PGPASSWORD", password);
         }
-        match command
-            .status()
-            .await
-        {
+        match command.status().await {
             Ok(status) if status.success() => Ok(Dump { path: Some(dest) }),
             Ok(status) => Err(Error::RuntimeError(io::Error::other(format!(
                 "pg_dump exited with {} for database {}",

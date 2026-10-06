@@ -120,7 +120,7 @@ impl Bucket {
             // ByteStream::from_path sets Content-Length from file metadata.
             let body = ByteStream::from_path(path)
                 .await
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                .map_err(std::io::Error::other)?;
             let response = self
                 .client
                 .put_object()
