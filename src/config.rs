@@ -21,6 +21,7 @@ use std::fmt;
 use tokio::{fs, io};
 
 #[derive(Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct GitConfig {
     pub host: String,
     pub port: u16,
@@ -31,6 +32,7 @@ pub struct GitConfig {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct SshConfig {
     pub host: String,
     pub port: u16,
@@ -39,6 +41,7 @@ pub struct SshConfig {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AwsConfig {
     pub region: String,
     pub endpoint: Option<String>,
@@ -48,11 +51,13 @@ pub struct AwsConfig {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GCloudConfig {
     pub service_account_path: String,
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PostgreSqlConfig {
     pub username: String,
     pub db_name: String,
@@ -66,12 +71,14 @@ pub struct PostgreSqlConfig {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DockerConfig {
     pub container_name: String,
     pub command: String,
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ZfsConfig {
     pub dataset: String,
     pub snapshot_name: String,
@@ -86,11 +93,13 @@ pub struct ZfsConfig {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FoldersConfig {
     pub pattern: String,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct BackupConfig {
     pub what: String,
     pub r#where: String,
@@ -101,11 +110,13 @@ pub struct BackupConfig {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LocalhostConfig {
     pub path: String,
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     // remotes
     pub aws: Option<HashMap<String, AwsConfig>>,
@@ -155,5 +166,53 @@ impl Config {
         let txt = fs::read_to_string(path).await?;
         let config: Config = toml::from_str(&txt)?;
         Ok(config)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn misplaced_full_when_is_rejected() {
+        // full_when belongs to [zfs.<name>], not to [backup.<name>]: an
+        // unknown key must fail the parse instead of being silently ignored.
+        let txt = r#"
+            [zfs.storage]
+            dataset = "storage"
+            snapshot_name = "storage-snap"
+
+            [backup.storage]
+            what = "zfs.storage"
+            where = "aws.bucket"
+            when = "daily 22:00"
+            remote_path = "/zfs/storage/"
+            compress = false
+            full_when = "monthly 1 22:00"
+        "#;
+        let err = toml::from_str::<Config>(txt)
+            .err()
+            .expect("unknown key rejected");
+        assert!(err.to_string().contains("full_when"), "{}", err);
+    }
+
+    #[test]
+    fn full_when_in_zfs_section_is_accepted() {
+        let txt = r#"
+            [zfs.storage]
+            dataset = "storage"
+            snapshot_name = "storage-snap"
+            full_when = "monthly 1 22:00"
+
+            [backup.storage]
+            what = "zfs.storage"
+            where = "aws.bucket"
+            when = "daily 22:00"
+            remote_path = "/zfs/storage/"
+            compress = false
+        "#;
+        let config: Config = toml::from_str(txt).unwrap();
+        let zfs = config.zfs.unwrap();
+        assert_eq!(zfs["storage"].full_when.as_deref(), Some("monthly 1 22:00"));
     }
 }

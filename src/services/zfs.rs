@@ -388,6 +388,10 @@ impl Zfs {
             .to_string();
 
         debug!("new zfs service on {dataset} (snapshot base {snapshot_base})");
+        match &config.full_when {
+            Some(expr) => info!("zfs.{name}: full backups when '{expr}', incrementals in between"),
+            None => info!("zfs.{name}: full_when not set, every run takes a full backup"),
+        }
         Ok(Zfs {
             name: name.to_string(),
             cmd,
@@ -407,8 +411,12 @@ impl Zfs {
 
     /// List all snapshots of our chain on the dataset tree, including those
     /// on child datasets (created with `-r`).
-    async fn list_our_snapshots(&self) -> Vec<Snapshot> {
-        let output = match Command::new(&self.cmd)
+    ///
+    /// A failing `zfs list` is an error: treating it as "no snapshots" would
+    /// silently turn the run into a full backup and destroy nothing, breaking
+    /// the expected full/incremental cadence without notice.
+    async fn list_our_snapshots(&self) -> Result<Vec<Snapshot>, Error> {
+        let output = Command::new(&self.cmd)
             .arg("list")
             .arg("-r")
             .arg("-H")
@@ -418,16 +426,20 @@ impl Zfs {
             .arg("snapshot")
             .arg(&self.dataset)
             .output()
-            .await
-        {
-            Ok(output) if output.status.success() => output,
-            _ => return vec![],
-        };
-        String::from_utf8_lossy(&output.stdout)
+            .await?;
+        if !output.status.success() {
+            return Err(Error::String(format!(
+                "zfs list snapshots of {} failed (exit {}): {}",
+                self.dataset,
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout)
             .lines()
             .map(|line| line.trim().to_string())
             .filter_map(|line| parse_snapshot(&line, &self.snapshot_base))
-            .collect()
+            .collect())
     }
 
     async fn create_snapshot(&self, name: &str) -> Result<(), Error> {
@@ -493,9 +505,19 @@ impl Zfs {
         let now = Utc::now();
         let ts = format_ts(now);
 
-        let snapshots = self.list_our_snapshots().await;
+        let snapshots = self.list_our_snapshots().await?;
         let plan = select_plan(now, self.full_when.as_ref(), &snapshots);
         let is_full = plan[0] == "full";
+        if is_full {
+            let reason = if self.full_when.is_none() {
+                "full_when is not set"
+            } else if latest_of_kind(&snapshots, Some(SnapshotKind::Full)).is_none() {
+                "no previous full snapshot of the chain exists"
+            } else {
+                "the full_when schedule is due"
+            };
+            info!("full backup selected for {}: {reason}", self.dataset);
+        }
         let kind: SnapshotKind = if is_full {
             SnapshotKind::Full
         } else {
@@ -545,10 +567,17 @@ impl Zfs {
                 }
                 let full_name = format!("{}@{}-{FULL_MARK}-{ts}", self.dataset, self.snapshot_base);
                 self.create_snapshot(&full_name).await?;
+                // The fallback is a full stream: name the dump file as such,
+                // or a restore would treat it as an incremental.
+                let _ = fs::remove_file(&dest).await;
+                let dest = dump_file_name(&self.name, SnapshotKind::Full, &ts);
                 let send = send_args(SnapshotKind::Full, None, &full_name);
                 self.send(&send, &dest).await?;
                 info!("ZFS full checkpoint completed successfully (incremental fallback)");
                 self.cleanup(&snapshots, &full_name).await;
+                return Ok(Dump {
+                    path: Some(dest.into()),
+                });
             } else {
                 info!("ZFS incremental checkpoint completed successfully (base {base})");
             }
