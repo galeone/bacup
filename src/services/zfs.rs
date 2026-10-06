@@ -89,6 +89,36 @@ pub(crate) fn dump_file_name(name: &str, kind: SnapshotKind, ts: &str) -> String
     format!("{name}-{mark}-{ts}{SNAPSHOT_EXT}")
 }
 
+/// Chronological sort key for a remote object name, used by `keep_last`
+/// pruning.
+///
+/// Remote names normally start with their timestamp, so they sort
+/// chronologically as plain strings. zfs dump files do not: in
+/// `<name>-{full,inc}-<ts>.snapshot` the kind comes first, so every `inc`
+/// sorts after every `full` regardless of time, and pruning by name would
+/// delete the fulls the incrementals depend on. For zfs dump files the kind
+/// is dropped from the key (`<name>-<ts>.snapshot`); any other name is
+/// returned unchanged.
+pub fn retention_sort_key(remote_name: &str) -> String {
+    let (dir, file) = match remote_name.rfind('/') {
+        Some(i) => remote_name.split_at(i + 1),
+        None => ("", remote_name),
+    };
+    let Some(stem) = file.strip_suffix(SNAPSHOT_EXT) else {
+        return remote_name.to_string();
+    };
+    for mark in [FULL_MARK, INC_MARK] {
+        let marker = format!("-{mark}-");
+        if let Some(i) = stem.rfind(&marker) {
+            let (name, ts) = (&stem[..i], &stem[i + marker.len()..]);
+            if NaiveDateTime::parse_from_str(ts, TS_FORMAT).is_ok() {
+                return format!("{dir}{name}-{ts}{SNAPSHOT_EXT}");
+            }
+        }
+    }
+    remote_name.to_string()
+}
+
 /// Arguments for the `zfs send` command to dump the given snapshot.
 /// A full snapshot is sent with `send -R -v -c -L`, an incremental one with
 /// `send -R -v -c -L -i <base>` where `<base>` is the name of the snapshot it
@@ -713,6 +743,32 @@ mod tests {
             name: name.to_string(),
             kind,
             time: t(ymd),
+        }
+    }
+
+    #[test]
+    fn retention_sort_key_ignores_the_kind() {
+        assert_eq!(
+            retention_sort_key("gtr7/zfs/storage/storage-full-20261005-220000.snapshot"),
+            "gtr7/zfs/storage/storage-20261005-220000.snapshot"
+        );
+        assert_eq!(
+            retention_sort_key("storage-inc-20261006-220000.snapshot"),
+            "storage-20261006-220000.snapshot"
+        );
+        // A service name containing a marker is left alone, only the last
+        // marker followed by a timestamp is dropped.
+        assert_eq!(
+            retention_sort_key("my-inc-pool-full-20261005-220000.snapshot"),
+            "my-inc-pool-20261005-220000.snapshot"
+        );
+        // Non zfs names are unchanged.
+        for name in [
+            "backups/2026-10-05-22:00-db.sql.gz",
+            "backups/storage-full-notatimestamp.snapshot",
+            "backups/storage-full-20261005-220000.gz",
+        ] {
+            assert_eq!(retention_sort_key(name), name);
         }
     }
 

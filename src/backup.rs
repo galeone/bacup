@@ -15,6 +15,7 @@
 use crate::config::BackupConfig;
 use crate::remotes::remote;
 use crate::services::service::Service;
+use crate::services::zfs::retention_sort_key;
 use crate::when;
 
 use cron::Schedule;
@@ -264,23 +265,17 @@ impl Backup {
                             if let Some(to_keep) = keep_last {
                                 let to_keep = to_keep as usize;
                                 match remote.enumerate(remote_path.parent().unwrap()).await {
-                                    Ok(mut list) => {
-                                        if list.len() > to_keep {
-                                            list.sort();
-                                            list.reverse();
-                                            for delete_me in &list[to_keep..] {
-                                                if let Some(error) = remote
-                                                    .delete(&PathBuf::from(delete_me))
-                                                    .await
-                                                    .err()
-                                                {
-                                                    error!(
-                                                        "[{}] Error during delete of {}: {}",
-                                                        name, delete_me, error
-                                                    );
-                                                } else {
-                                                    info!("[{}] Deleted {}", name, delete_me);
-                                                }
+                                    Ok(list) => {
+                                        for delete_me in &to_prune(list, to_keep) {
+                                            if let Some(error) =
+                                                remote.delete(&PathBuf::from(delete_me)).await.err()
+                                            {
+                                                error!(
+                                                    "[{}] Error during delete of {}: {}",
+                                                    name, delete_me, error
+                                                );
+                                            } else {
+                                                info!("[{}] Deleted {}", name, delete_me);
                                             }
                                         }
                                     }
@@ -313,10 +308,55 @@ impl Backup {
     }
 }
 
+/// The remote objects to delete so that only the `to_keep` newest remain.
+/// Objects are ordered chronologically by [retention_sort_key], so zfs
+/// `full`/`inc` dump files are pruned by age and not by kind.
+fn to_prune(mut list: Vec<String>, to_keep: usize) -> Vec<String> {
+    if list.len() <= to_keep {
+        return vec![];
+    }
+    list.sort_by_cached_key(|name| retention_sort_key(name));
+    list.reverse();
+    list.split_off(to_keep)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use croner::Cron;
+
+    #[test]
+    fn to_prune_keeps_the_newest_by_name() {
+        let list = vec![
+            "p/2026-10-03-22:00-db.gz".to_string(),
+            "p/2026-10-05-22:00-db.gz".to_string(),
+            "p/2026-10-04-22:00-db.gz".to_string(),
+        ];
+        assert_eq!(to_prune(list.clone(), 2), vec!["p/2026-10-03-22:00-db.gz"]);
+        assert!(to_prune(list, 3).is_empty());
+    }
+
+    #[test]
+    fn to_prune_zfs_chain_across_a_new_full() {
+        // daily backups, monthly full on the 1st, keep_last = 32: the
+        // October chain (full on Oct 5 + daily incs) followed by the
+        // November full and a week of incs.
+        let file = |kind: &str, month: u32, day: u32| {
+            format!("gtr7/zfs/storage/storage-{kind}-2026{month:02}{day:02}-220000.snapshot")
+        };
+        let mut list = vec![file("full", 10, 5)];
+        list.extend((6..=31).map(|d| file("inc", 10, d)));
+        list.push(file("full", 11, 1));
+        list.extend((2..=7).map(|d| file("inc", 11, d)));
+
+        let pruned = to_prune(list.clone(), 32);
+        // Only the oldest objects go, and the November full is kept:
+        // the remote stays restorable from it.
+        assert_eq!(pruned, vec![file("inc", 10, 6), file("full", 10, 5)]);
+        let kept: Vec<_> = list.iter().filter(|f| !pruned.contains(f)).collect();
+        assert!(kept.contains(&&file("full", 11, 1)));
+        assert_eq!(kept.len(), 32);
+    }
 
     fn validate_cron_expression(when: &str) {
         let result = when::parse_when(when);
