@@ -204,6 +204,23 @@ fn latest_of_kind(snapshots: &[Snapshot], kind: Option<SnapshotKind>) -> Option<
         .max_by(|a, b| a.time.cmp(&b.time))
 }
 
+/// The snapshots of `snapshots` taken on `dataset` itself, excluding those
+/// of its child datasets.
+///
+/// `zfs snapshot -r` gives every dataset of the tree a snapshot with the
+/// same name and timestamp, so the plan (latest full, incremental base) must
+/// be computed on the root dataset only: `zfs send -R -i <base> <new>`
+/// requires `<base>` to be a snapshot of the same dataset as `<new>`, and a
+/// child's snapshot (e.g. `tank/data@snap-full-...` for `tank@snap-inc-...`)
+/// makes the send fail.
+pub(crate) fn root_snapshots(dataset: &str, snapshots: &[Snapshot]) -> Vec<Snapshot> {
+    snapshots
+        .iter()
+        .filter(|s| s.name.split('@').next() == Some(dataset))
+        .cloned()
+        .collect()
+}
+
 /// The names of the snapshots to destroy after a new full snapshot has been
 /// created and sent: every snapshot of our chain except the new full
 /// (which, being the newest, is the only one the incremental chain needs).
@@ -422,14 +439,46 @@ impl Zfs {
             Some(expr) => info!("zfs.{name}: full backups when '{expr}', incrementals in between"),
             None => info!("zfs.{name}: full_when not set, every run takes a full backup"),
         }
-        Ok(Zfs {
+        let zfs = Zfs {
             name: name.to_string(),
             cmd,
             dataset: dataset.clone(),
             snapshot_base: snapshot_base.clone(),
             full_when,
             compression,
-        })
+        };
+        zfs.check_send().await?;
+        Ok(zfs)
+    }
+
+    /// Dry-run (`zfs send -n`) the send the next run builds on, so that
+    /// unsupported flags, a broken chain or wrong arguments are reported at
+    /// startup instead of at the first scheduled run.
+    ///
+    /// With at least two snapshots of the chain on the root dataset, the
+    /// incremental between the last two is dry-run (same arguments as an
+    /// incremental run); with one, its full send. Without snapshots there is
+    /// nothing to check: the first run is a full.
+    async fn check_send(&self) -> Result<(), Error> {
+        let mut root = root_snapshots(&self.dataset, &self.list_our_snapshots().await?);
+        root.sort_by_key(|s| s.time);
+        let mut args = match root.as_slice() {
+            [] => return Ok(()),
+            [only] => send_args(SnapshotKind::Full, None, &only.name),
+            [.., prev, last] => send_args(SnapshotKind::Incremental, Some(&prev.name), &last.name),
+        };
+        args.insert(1, "-n".into());
+        let output = Command::new(&self.cmd).args(&args).output().await?;
+        if !output.status.success() {
+            return Err(Error::String(format!(
+                "dry run `zfs {}` failed (exit {}): {}",
+                args.join(" "),
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        debug!("dry run `zfs {}` succeeded", args.join(" "));
+        Ok(())
     }
 
     /// Value of the dataset's `compression` property (`off`, `zstd`, ...).
@@ -501,13 +550,15 @@ impl Zfs {
         Ok(())
     }
 
-    async fn destroy(&self, name: &str) -> bool {
-        match Command::new(&self.cmd)
-            .arg("destroy")
-            .arg(name)
-            .status()
-            .await
-        {
+    /// Destroy the snapshot `name`; with `recursive`, also the snapshots with
+    /// the same name on the child datasets (`zfs destroy -r`).
+    async fn destroy(&self, name: &str, recursive: bool) -> bool {
+        let mut cmd = Command::new(&self.cmd);
+        cmd.arg("destroy");
+        if recursive {
+            cmd.arg("-r");
+        }
+        match cmd.arg(name).status().await {
             Ok(status) => status.success(),
             Err(e) => {
                 warn!("failed to run zfs destroy {name}: {e}");
@@ -536,12 +587,13 @@ impl Zfs {
         let ts = format_ts(now);
 
         let snapshots = self.list_our_snapshots().await?;
-        let plan = select_plan(now, self.full_when.as_ref(), &snapshots);
+        let root = root_snapshots(&self.dataset, &snapshots);
+        let plan = select_plan(now, self.full_when.as_ref(), &root);
         let is_full = plan[0] == "full";
         if is_full {
             let reason = if self.full_when.is_none() {
                 "full_when is not set"
-            } else if latest_of_kind(&snapshots, Some(SnapshotKind::Full)).is_none() {
+            } else if latest_of_kind(&root, Some(SnapshotKind::Full)).is_none() {
                 "no previous full snapshot of the chain exists"
             } else {
                 "the full_when schedule is due"
@@ -590,7 +642,9 @@ impl Zfs {
                     "incremental send from base {base} failed; \
                      destroying the incremental snapshot and retrying as a full backup"
                 );
-                if self.destroy(&new_name).await {
+                // The snapshot was taken with `-r`: destroy it on the whole
+                // tree, or the children keep orphan incremental snapshots.
+                if self.destroy(&new_name, true).await {
                     info!("incremental snapshot {new_name} destroyed");
                 } else {
                     warn!("failed to destroy incremental snapshot {new_name}");
@@ -692,7 +746,7 @@ impl Zfs {
         let to_destroy = cleanup_list(new_full_name, snapshots);
         let mut destroyed = 0;
         for name in &to_destroy {
-            if self.destroy(name).await {
+            if self.destroy(name, false).await {
                 info!("destroyed old zfs snapshot {name}");
                 destroyed += 1;
             } else {
@@ -744,6 +798,49 @@ mod tests {
             kind,
             time: t(ymd),
         }
+    }
+
+    #[test]
+    fn incremental_base_is_on_the_root_dataset() {
+        // `zfs list -r` lists the root and every child with the same
+        // snapshot name and time; the base must be the root's snapshot,
+        // whatever the listing order.
+        let names = [
+            "zroot@zroot-snap-full-20261005-100000",
+            "zroot/data@zroot-snap-full-20261005-100000",
+            "zroot/data/home@zroot-snap-full-20261005-100000",
+        ];
+        for rotation in 0..names.len() {
+            let mut ordered = names.to_vec();
+            ordered.rotate_left(rotation);
+            let snaps: Vec<_> = ordered
+                .iter()
+                .filter_map(|n| parse_snapshot(n, "zroot-snap"))
+                .collect();
+            let root = root_snapshots("zroot", &snaps);
+            assert_eq!(root.len(), 1);
+            let cron = parse_schedule("monthly 1 10:00").unwrap();
+            let now = Utc.with_ymd_and_hms(2026, 10, 6, 10, 0, 0).unwrap();
+            assert_eq!(
+                select_plan(now, Some(&cron), &root),
+                vec!["inc", "zroot@zroot-snap-full-20261005-100000"]
+            );
+        }
+    }
+
+    #[test]
+    fn root_snapshots_does_not_match_dataset_prefixes() {
+        let snaps: Vec<_> = [
+            "tank@snap-full-20260101-010000",
+            "tank2@snap-full-20260101-010000",
+            "tank/data@snap-full-20260101-010000",
+        ]
+        .iter()
+        .filter_map(|n| parse_snapshot(n, "snap"))
+        .collect();
+        let root = root_snapshots("tank", &snaps);
+        assert_eq!(root.len(), 1);
+        assert_eq!(root[0].name, "tank@snap-full-20260101-010000");
     }
 
     #[test]
