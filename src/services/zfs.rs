@@ -119,6 +119,26 @@ pub fn retention_sort_key(remote_name: &str) -> String {
     remote_name.to_string()
 }
 
+/// The snapshot a local dump file was sent from: `<name>-<kind>-<ts>.snapshot`
+/// maps to `<dataset>@<snapshot_base>-<kind>-<ts>`. Returns `None` for a file
+/// that is not a dump of the service `name`.
+pub(crate) fn dump_snapshot_name(
+    file_name: &str,
+    name: &str,
+    dataset: &str,
+    snapshot_base: &str,
+) -> Option<String> {
+    let snap = parse_snapshot_name(file_name, name)?;
+    let mark = match snap.kind {
+        SnapshotKind::Full => FULL_MARK,
+        SnapshotKind::Incremental => INC_MARK,
+    };
+    Some(format!(
+        "{dataset}@{snapshot_base}-{mark}-{}",
+        format_ts(snap.time)
+    ))
+}
+
 /// Arguments for the `zfs send` command to dump the given snapshot.
 /// A full snapshot is sent with `send -R -v -c -L`, an incremental one with
 /// `send -R -v -c -L -i <base>` where `<base>` is the name of the snapshot it
@@ -218,17 +238,6 @@ pub(crate) fn root_snapshots(dataset: &str, snapshots: &[Snapshot]) -> Vec<Snaps
         .iter()
         .filter(|s| s.name.split('@').next() == Some(dataset))
         .cloned()
-        .collect()
-}
-
-/// The names of the snapshots to destroy after a new full snapshot has been
-/// created and sent: every snapshot of our chain except the new full
-/// (which, being the newest, is the only one the incremental chain needs).
-pub(crate) fn cleanup_list(new_full_name: &str, snapshots: &[Snapshot]) -> Vec<String> {
-    snapshots
-        .iter()
-        .map(|s| s.name.clone())
-        .filter(|n| n != new_full_name)
         .collect()
 }
 
@@ -463,7 +472,13 @@ impl Zfs {
         let mut root = root_snapshots(&self.dataset, &self.list_our_snapshots().await?);
         root.sort_by_key(|s| s.time);
         let mut args = match root.as_slice() {
-            [] => return Ok(()),
+            [] => {
+                info!(
+                    "zfs.{}: no snapshots of the chain yet, nothing to dry-run (the first run is a full)",
+                    self.name
+                );
+                return Ok(());
+            }
             [only] => send_args(SnapshotKind::Full, None, &only.name),
             [.., prev, last] => send_args(SnapshotKind::Incremental, Some(&prev.name), &last.name),
         };
@@ -477,7 +492,7 @@ impl Zfs {
                 String::from_utf8_lossy(&output.stderr).trim()
             )));
         }
-        debug!("dry run `zfs {}` succeeded", args.join(" "));
+        info!("zfs.{}: dry run `zfs {}` ok", self.name, args.join(" "));
         Ok(())
     }
 
@@ -550,6 +565,24 @@ impl Zfs {
         Ok(())
     }
 
+    /// Send the full snapshot `name` to `dest`. On failure the snapshot is
+    /// destroyed on the whole tree (and the partial dump removed): the old
+    /// chain is already gone, and a full that never reached the remote must
+    /// not become the base of the next incremental. The next run then finds
+    /// no full and takes one again.
+    async fn send_full(&self, args: &[String], dest: &str, name: &str) -> Result<(), Error> {
+        let result = self.send(args, dest).await;
+        if result.is_err() {
+            if self.destroy(name, true).await {
+                info!("full snapshot {name} destroyed after the failed send");
+            } else {
+                warn!("failed to destroy full snapshot {name} after the failed send");
+            }
+            let _ = fs::remove_file(dest).await;
+        }
+        result
+    }
+
     /// Destroy the snapshot `name`; with `recursive`, also the snapshots with
     /// the same name on the child datasets (`zfs destroy -r`).
     async fn destroy(&self, name: &str, recursive: bool) -> bool {
@@ -578,6 +611,41 @@ impl Service for Zfs {
 
     async fn list(&self) -> Vec<PathBuf> {
         self.list_files().await
+    }
+
+    /// The dump of this run did not reach the remote: destroy the snapshot
+    /// it was sent from, on the whole tree. Otherwise the next incremental
+    /// would be based on it, producing a stream the remote cannot apply
+    /// (its base is missing there). The next run then takes an incremental
+    /// against the previous snapshot, or a full when this run was the full
+    /// (the old chain is already gone).
+    async fn upload_failed(&self, dump: &Dump) {
+        let Some(file_name) = dump
+            .path
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map(|f| f.to_string_lossy().to_string())
+        else {
+            return;
+        };
+        let Some(snapshot) =
+            dump_snapshot_name(&file_name, &self.name, &self.dataset, &self.snapshot_base)
+        else {
+            warn!(
+                "upload of {file_name} failed, but it is not a dump of zfs.{}",
+                self.name
+            );
+            return;
+        };
+        warn!("upload of {file_name} failed: destroying {snapshot} so the next run does not build on it");
+        if self.destroy(&snapshot, true).await {
+            info!("zfs snapshot {snapshot} destroyed");
+        } else {
+            warn!(
+                "failed to destroy zfs snapshot {snapshot}: destroy it manually \
+                 (zfs destroy -r {snapshot}), or the next incremental is based on it"
+            );
+        }
     }
 }
 
@@ -624,15 +692,18 @@ impl Zfs {
                 .map(|b| format!(" based on {b}"))
                 .unwrap_or_default()
         );
-        self.create_snapshot(&new_name).await?;
-
         if is_full {
-            // A full chain replaces all previous ones: dump it and clean up.
+            // A full chain replaces all previous ones. Clean up before taking
+            // the full: `zfs send -R` streams every snapshot of the tree up
+            // to the new one, so leftover snapshots of the old chain would
+            // end up inside the full dump.
+            self.cleanup(&snapshots).await;
+            self.create_snapshot(&new_name).await?;
             let send = send_args(kind, base.as_deref(), &new_name);
-            self.send(&send, &dest).await?;
+            self.send_full(&send, &dest, &new_name).await?;
             info!("ZFS full checkpoint completed successfully");
-            self.cleanup(&snapshots, &new_name).await;
         } else {
+            self.create_snapshot(&new_name).await?;
             // Incremental: fall back to a full if the base is gone
             // (e.g. a child dataset was destroyed and recreated).
             let base = base.expect("plan guarantees a base for incrementals");
@@ -650,15 +721,17 @@ impl Zfs {
                     warn!("failed to destroy incremental snapshot {new_name}");
                 }
                 let full_name = format!("{}@{}-{FULL_MARK}-{ts}", self.dataset, self.snapshot_base);
+                // As for a planned full: the old chain goes before the full
+                // is taken, so it is not streamed inside it.
+                self.cleanup(&snapshots).await;
                 self.create_snapshot(&full_name).await?;
                 // The fallback is a full stream: name the dump file as such,
                 // or a restore would treat it as an incremental.
                 let _ = fs::remove_file(&dest).await;
                 let dest = dump_file_name(&self.name, SnapshotKind::Full, &ts);
                 let send = send_args(SnapshotKind::Full, None, &full_name);
-                self.send(&send, &dest).await?;
+                self.send_full(&send, &dest, &full_name).await?;
                 info!("ZFS full checkpoint completed successfully (incremental fallback)");
-                self.cleanup(&snapshots, &full_name).await;
                 return Ok(Dump {
                     path: Some(dest.into()),
                 });
@@ -738,12 +811,13 @@ fn parse_snapshot_name(file_name: &str, name: &str) -> Option<Snapshot> {
 }
 
 impl Zfs {
-    /// After a successful full: destroy all older snapshots of our chain on
-    /// the dataset tree. Best effort: failures are logged but do not fail the
-    /// backup. Local dump files are not cleaned up here: the [Dump] returned
-    /// by `do_dump` removes its own file when dropped by the backup job.
-    async fn cleanup(&self, snapshots: &[Snapshot], new_full_name: &str) {
-        let to_destroy = cleanup_list(new_full_name, snapshots);
+    /// Before a new full: destroy all snapshots of the old chain on the
+    /// dataset tree. Best effort: failures are logged but do not fail the
+    /// backup (a leftover snapshot is only streamed inside the new full).
+    /// Local dump files are not cleaned up here: the [Dump] returned by
+    /// `do_dump` removes its own file when dropped by the backup job.
+    async fn cleanup(&self, snapshots: &[Snapshot]) {
+        let to_destroy: Vec<String> = snapshots.iter().map(|s| s.name.clone()).collect();
         let mut destroyed = 0;
         for name in &to_destroy {
             if self.destroy(name, false).await {
@@ -841,6 +915,38 @@ mod tests {
         let root = root_snapshots("tank", &snaps);
         assert_eq!(root.len(), 1);
         assert_eq!(root[0].name, "tank@snap-full-20260101-010000");
+    }
+
+    #[test]
+    fn dump_snapshot_name_maps_the_dump_to_its_snapshot() {
+        assert_eq!(
+            dump_snapshot_name(
+                "storage-inc-20261007-220000.snapshot",
+                "storage",
+                "storage",
+                "storage-snap"
+            )
+            .as_deref(),
+            Some("storage@storage-snap-inc-20261007-220000")
+        );
+        assert_eq!(
+            dump_snapshot_name(
+                "zroot-full-20261101-100000.snapshot",
+                "zroot",
+                "zroot",
+                "zroot-snap"
+            )
+            .as_deref(),
+            Some("zroot@zroot-snap-full-20261101-100000")
+        );
+        // Not a dump of this service.
+        assert!(dump_snapshot_name(
+            "storage-inc-20261007-220000.snapshot",
+            "zroot",
+            "zroot",
+            "zroot-snap"
+        )
+        .is_none());
     }
 
     #[test]
@@ -1005,36 +1111,6 @@ mod tests {
         let cron = Cron::from_str("0 1 1 * *").unwrap();
         // Non-due time but no snapshots at all: incremental impossible.
         assert_eq!(select_plan(t("20260115"), Some(&cron), &[]), vec!["full"]);
-    }
-
-    #[test]
-    fn cleanup_keeps_only_new_full() {
-        let snaps = vec![
-            snap(
-                "tank@snap-full-20260101-010000",
-                SnapshotKind::Full,
-                "20260101",
-            ),
-            snap(
-                "tank@snap-inc-20260102-010000",
-                SnapshotKind::Incremental,
-                "20260102",
-            ),
-            snap(
-                "tank/data@snap-inc-20260102-010000",
-                SnapshotKind::Incremental,
-                "20260102",
-            ),
-        ];
-        let cleaned = cleanup_list("tank@snap-full-20260201-010000", &snaps);
-        assert_eq!(
-            cleaned,
-            vec![
-                "tank@snap-full-20260101-010000",
-                "tank@snap-inc-20260102-010000",
-                "tank/data@snap-inc-20260102-010000",
-            ]
-        );
     }
 
     #[test]

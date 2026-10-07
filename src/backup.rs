@@ -200,6 +200,9 @@ impl Backup {
                             local_files = vec![PathBuf::from(local_prefix)];
                         }
 
+                        // Set when any upload fails: the service is told after the uploads.
+                        let mut upload_failed = false;
+
                         // Special case in which we want to upload a folder without compression
                         // If all the files share the same prefix, we upload all the files in this prefix.
                         // The remote should handle eventual incremental backup.
@@ -211,6 +214,7 @@ impl Backup {
                                 remote_path.display()
                             );
                             let result = remote.upload_folder(&local_files, remote_path).await;
+                            upload_failed |= result.is_err();
                             Backup::log_result(
                                 result,
                                 &name,
@@ -261,8 +265,11 @@ impl Backup {
                                 remote.upload_file(&file, &remote_path).await
                             };
 
-                            // Handle keep_last
-                            if let Some(to_keep) = keep_last {
+                            upload_failed |= result.is_err();
+
+                            // Handle keep_last. Skipped when the upload failed: the
+                            // remote did not get a new backup, so nothing old goes.
+                            if let (Some(to_keep), true) = (keep_last, result.is_ok()) {
                                 let to_keep = to_keep as usize;
                                 match remote.enumerate(remote_path.parent().unwrap()).await {
                                     Ok(list) => {
@@ -293,6 +300,10 @@ impl Backup {
                                 &remote_path,
                                 compress,
                             );
+                        }
+
+                        if upload_failed {
+                            service.upload_failed(&dump).await;
                         }
 
                         info!(

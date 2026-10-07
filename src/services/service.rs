@@ -47,4 +47,10 @@ pub trait Service: DynClone {
 
     // list returns the list of the paths that should be uploaded to the Remote - those are created by dump().
     async fn list(&self) -> Vec<PathBuf>;
+
+    // upload_failed is called when the files of `dump` did not all reach the
+    // Remote. Services whose next dump builds on this one (e.g. zfs
+    // incrementals) undo it here, so the next run does not depend on data
+    // the Remote never received. The default does nothing.
+    async fn upload_failed(&self, _dump: &Dump) {}
 }
