@@ -1,4 +1,4 @@
-// Copyright 2022 Paolo Galeone <nessuno@nerdz.eu>
+// Copyright 2022-2026 Paolo Galeone <nessuno@nerdz.eu>
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,3 +16,4 @@ pub mod docker;
 pub mod folders;
 pub mod postgresql;
 pub mod service;
+pub mod zfs;

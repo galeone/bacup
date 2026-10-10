@@ -1,4 +1,4 @@
-// Copyright 2022 Paolo Galeone <nessuno@nerdz.eu>
+// Copyright 2022-2026 Paolo Galeone <nessuno@nerdz.eu>
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::fmt;
 use std::string::String;
 
-use log::warn;
+use log::{info, warn};
 
 use tokio::fs;
 use tokio::fs::File;
@@ -35,6 +35,8 @@ use async_trait::async_trait;
 
 use std::process::{Command, Stdio};
 use which::which;
+
+use base64::Engine;
 
 #[derive(Debug)]
 pub enum Error {
@@ -67,6 +69,54 @@ impl fmt::Display for Error {
     }
 }
 
+/// Detect passphrase-encrypted private keys in the modern OpenSSH format
+/// (`openssh-key-v1`), which unlike legacy PEM keys has no `Proc-Type`/
+/// `ENCRYPTED` header. The cipher name right after the key magic is `none`
+/// for unencrypted keys and a cipher name (e.g. `aes256-ctr`) otherwise.
+fn openssh_key_is_encrypted(key: &str) -> bool {
+    const BEGIN: &str = "-----BEGIN OPENSSH PRIVATE KEY-----";
+    const END: &str = "-----END OPENSSH PRIVATE KEY-----";
+    let Some(start) = key.find(BEGIN) else {
+        return false;
+    };
+    let rest = &key[start + BEGIN.len()..];
+    let Some(end) = rest.find(END) else {
+        return false;
+    };
+    let b64: String = rest[..end]
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '+' || *c == '/')
+        .collect();
+    let Ok(bytes) = base64::engine::general_purpose::STANDARD_NO_PAD.decode(b64.as_bytes()) else {
+        return false;
+    };
+    // openssh-key-v1 layout: uint32 len, magic, uint32 len, ciphername, ...
+    let read_u32 = |bytes: &[u8], pos: usize| -> Option<u32> {
+        bytes
+            .get(pos..pos + 4)
+            .map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+    };
+    let Some(magic_len) = read_u32(&bytes, 0).map(|v| v as usize) else {
+        return false;
+    };
+    if bytes.len() < 4 + magic_len || &bytes[4..4 + magic_len] != b"openssh-key-v1" {
+        return false;
+    }
+    let Some(cipher_len) = read_u32(&bytes, 4 + magic_len).map(|v| v as usize) else {
+        return false;
+    };
+    let pos = 4 + magic_len + 4;
+    if bytes.len() < pos + cipher_len {
+        return false;
+    }
+    bytes[pos..pos + cipher_len] != *b"none"
+}
+
+/// Quote a value for use inside a remote shell command (POSIX single-quoting).
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
 #[derive(Clone)]
 pub struct Ssh {
     remote_name: String,
@@ -97,6 +147,15 @@ impl Ssh {
                 private_key.display()
             )));
         }
+        // Modern OpenSSH keys ("openssh-key-v1") have no Proc-Type header;
+        // detect encryption from the cipher name in the key blob.
+        if openssh_key_is_encrypted(&private_key_file) {
+            return Err(Error::InvalidPrivateKey(format!(
+                "Private key {} is encrypted with a passphrase. \
+                            A key without passphrase is required",
+                private_key.display()
+            )));
+        }
 
         let port = format!("{}", config.port);
         let host = format!("{}@{}", config.username, config.host);
@@ -114,8 +173,11 @@ impl Ssh {
         }
 
         let output = output.unwrap();
-        let stdout = String::from_utf8(output.stdout).unwrap();
-        let stderr = String::from_utf8(output.stderr).unwrap();
+        // Process output is arbitrary bytes (locale-dependent remote
+        // banners/messages) — display it lossy rather than panicking on
+        // non-UTF8.
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
         if stdout.is_empty() && stderr.contains("true") {
             // like on github.com -> can connect, can't execute anything on the shell
@@ -128,7 +190,7 @@ impl Ssh {
             //
             // But anyway this is a success since the connection was succesfull.
             warn!(
-                "Connection to  {}@{}:{} succeded, but received: {}",
+                "Connection to {}@{}:{} succeeded, but received: {}",
                 config.username, config.host, config.port, stderr
             );
         } else {
@@ -149,10 +211,7 @@ impl Ssh {
             if !status.success() {
                 return Err(Error::RuntimeError(io::Error::other(format!(
                     "ssh connection to {}@{}:{} failed with status: {}",
-                    config.username,
-                    config.host,
-                    config.port,
-                    status.code().unwrap(),
+                    config.username, config.host, config.port, status,
                 ))));
             }
         }
@@ -187,7 +246,7 @@ impl remote::Remote for Ssh {
             .args(
                 self.ssh_args
                     .iter()
-                    .chain(once(&format!("find {}/*", remote_path))),
+                    .chain(once(&format!("find {}/*", shell_quote(remote_path)))),
             )
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -216,7 +275,7 @@ impl remote::Remote for Ssh {
             .args(
                 self.ssh_args
                     .iter()
-                    .chain(once(&format!("rm -r {}", remote_path))),
+                    .chain(once(&format!("rm -r {}", shell_quote(remote_path)))),
             )
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -236,18 +295,22 @@ impl remote::Remote for Ssh {
     }
 
     async fn upload_file(&self, path: &Path, remote_path: &Path) -> Result<(), remote::Error> {
-        // Read file
-        let mut content: Vec<u8> = vec![];
-        let mut file = File::open(path).await?;
-        file.read_to_end(&mut content).await?;
+        let file_size = fs::metadata(path).await?.len();
         let remote_path = remote_path.to_str().unwrap();
+        info!(
+            "Uploading {} bytes from {} to {}",
+            file_size,
+            path.display(),
+            remote_path
+        );
 
         // cat file | ssh -Pxxx user@host "cat > file"
+        let mut file = File::open(path).await?;
         let mut ssh = Command::new(&self.ssh_cmd)
             .args(
                 self.ssh_args
                     .iter()
-                    .chain(once(&format!("cat > {}", remote_path))),
+                    .chain(once(&format!("cat > {}", shell_quote(remote_path)))),
             )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -256,9 +319,16 @@ impl remote::Remote for Ssh {
 
         {
             let stdin = ssh.stdin.as_mut().unwrap();
-            // This is the "cat file" on localhost piped into ssh
-            // when stdin is dropped
-            stdin.write_all(&content)?;
+            // This is the "cat file" on localhost piped into ssh:
+            // stream the file in chunks instead of reading it into memory.
+            let mut buf = vec![0u8; 8192];
+            loop {
+                let n = file.read(&mut buf).await?;
+                if n == 0 {
+                    break;
+                }
+                stdin.write_all(&buf[..n])?;
+            }
         }
         // Close stdin for being 100% sure that the process read all the file
 
@@ -279,6 +349,12 @@ impl remote::Remote for Ssh {
             );
             return Err(remote::Error::LocalError(io::Error::other(message)));
         }
+        info!(
+            "Successfully uploaded {} bytes from {} to {}",
+            file_size,
+            path.display(),
+            remote_path
+        );
         Ok(())
     }
 
@@ -288,26 +364,55 @@ impl remote::Remote for Ssh {
         remote_path: &Path,
     ) -> Result<(), remote::Error> {
         // Read and compress
-        let compressed_bytes = self.compress_file(path).await?;
+        let compressed_file = self.compress_file(path).await?;
         let remote_path = self.remote_compressed_file_path(remote_path);
+        info!(
+            "Uploading compressed file {} to {}",
+            compressed_file.path().display(),
+            remote_path.display()
+        );
 
         // cat file | ssh -Pxxx user@host "cat > file"
-        let mut ssh = Command::new(&self.ssh_cmd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .args(
-                self.ssh_args
-                    .iter()
-                    .chain(once(&format!("cat > {} ", remote_path.display()))),
-            )
+
+        let mut cat = Command::new("cat")
+            .arg(format!("{}", compressed_file.path().display()))
+            .stdout(Stdio::piped())
             .spawn()?;
-        ssh.stdin.as_mut().unwrap().write_all(&compressed_bytes)?;
+
+        let cat_output = match cat.stdout.take() {
+            Some(out) => out,
+            None => {
+                return Err(remote::Error::LocalError(io::Error::other(format!(
+                    "Unable to cat {}",
+                    compressed_file.path().display()
+                ))))
+            }
+        };
+
+        let mut ssh = Command::new(&self.ssh_cmd)
+            .stdin(cat_output)
+            .stdout(Stdio::null())
+            .args(self.ssh_args.iter().chain(once(&format!(
+                "cat > {}",
+                shell_quote(&remote_path.display().to_string())
+            ))))
+            .spawn()?;
+
+        // Wait on ssh first: if ssh dies early, cat receives SIGPIPE and
+        // its failure must not mask the real ssh error.
         let status = ssh.wait()?;
+        let _ = cat.wait();
+
         if !status.success() {
             return Err(remote::Error::LocalError(io::Error::other(
                 "Failure while executing ssh command",
             )));
         }
+        info!(
+            "Successfully uploaded compressed file {} to {}",
+            compressed_file.path().display(),
+            remote_path.display()
+        );
         Ok(())
     }
 
@@ -339,6 +444,13 @@ impl remote::Remote for Ssh {
         // delete is used to remove from remote and keep it in sync with local
         let args = vec!["-az", "-e", &ssh_port_opt, src, &dest, "--delete"];
 
+        info!(
+            "Synchronizing {} file(s) from {} to {}",
+            paths.len(),
+            src,
+            dest
+        );
+
         let status = Command::new(&self.rsync_cmd)
             .stderr(Stdio::null())
             .stdout(Stdio::null())
@@ -351,6 +463,12 @@ impl remote::Remote for Ssh {
             )));
         }
 
+        info!(
+            "Successfully synchronized {} file(s) from {} to {}",
+            paths.len(),
+            src,
+            dest
+        );
         Ok(())
     }
 
@@ -365,8 +483,70 @@ impl remote::Remote for Ssh {
 
         let remote_path = self.remote_archive_path(remote_path);
         let compressed_folder = self.compress_folder(path).await?;
+        info!(
+            "Uploading compressed folder archive {} to {}",
+            compressed_folder.path().display(),
+            remote_path.display()
+        );
 
         self.upload_file(compressed_folder.path(), &remote_path)
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_openssh_key(cipher: &[u8]) -> String {
+        // Minimal openssh-key-v1 blob: magic + cipher name. The parser only
+        // reads up to the cipher name, so the rest of the structure is not
+        // needed.
+        let magic = b"openssh-key-v1";
+        let mut blob = vec![];
+        blob.extend_from_slice(&(magic.len() as u32).to_be_bytes());
+        blob.extend_from_slice(magic);
+        blob.extend_from_slice(&(cipher.len() as u32).to_be_bytes());
+        blob.extend_from_slice(cipher);
+        let encoded = base64::engine::general_purpose::STANDARD_NO_PAD.encode(&blob);
+        format!(
+            "-----BEGIN OPENSSH PRIVATE KEY-----\n{encoded}\n-----END OPENSSH PRIVATE KEY-----\n"
+        )
+    }
+
+    #[test]
+    fn unencrypted_openssh_key_is_not_reported_as_encrypted() {
+        let key = make_openssh_key(b"none");
+        assert!(!openssh_key_is_encrypted(&key));
+    }
+
+    #[test]
+    fn encrypted_openssh_key_is_reported_as_encrypted() {
+        for cipher in [b"aes256-ctr", b"aes128-cbc"] {
+            let key = make_openssh_key(cipher);
+            assert!(openssh_key_is_encrypted(&key));
+        }
+    }
+
+    #[test]
+    fn legacy_pem_keys_are_out_of_scope() {
+        // Legacy PEM (with or without the Proc-Type/ENCRYPTED header) has no
+        // OPENSSH block: the Proc-Type check in new() covers that format.
+        let pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIE...\n-----END RSA PRIVATE KEY-----\n";
+        assert!(!openssh_key_is_encrypted(pem));
+        let encrypted_pem = "Proc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC\nMIIE...";
+        assert!(!openssh_key_is_encrypted(encrypted_pem));
+    }
+
+    #[test]
+    fn malformed_openssh_blocks_are_not_reported_as_encrypted() {
+        let garbage = "-----BEGIN OPENSSH PRIVATE KEY-----\n!!!!not-base64!!!!\n-----END OPENSSH PRIVATE KEY-----\n";
+        assert!(!openssh_key_is_encrypted(garbage));
+        // Valid base64, but not an openssh-key-v1 blob.
+        let encoded = base64::engine::general_purpose::STANDARD_NO_PAD.encode(b"not a key at all");
+        let not_a_key = format!(
+            "-----BEGIN OPENSSH PRIVATE KEY-----\n{encoded}\n-----END OPENSSH PRIVATE KEY-----\n"
+        );
+        assert!(!openssh_key_is_encrypted(&not_a_key));
     }
 }

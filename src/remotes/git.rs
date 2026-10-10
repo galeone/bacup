@@ -1,4 +1,4 @@
-// Copyright 2022 Paolo Galeone <nessuno@nerdz.eu>
+// Copyright 2022-2026 Paolo Galeone <nessuno@nerdz.eu>
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,14 +17,11 @@ use crate::remotes::remote;
 use crate::remotes::ssh;
 
 use tokio::fs;
-use tokio::fs::File;
-use tokio::io::AsyncWriteExt;
-
-use std::io;
-
-use std::path::{Path, PathBuf};
 
 use std::fmt;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::string::String;
 
 use which::which;
@@ -33,7 +30,7 @@ use async_trait::async_trait;
 
 use scopeguard::defer;
 
-use std::process::Command;
+use log::{info, warn};
 
 #[derive(Debug)]
 pub enum Error {
@@ -121,7 +118,14 @@ impl Git {
     }
 
     fn clone_repository(&self) -> Result<PathBuf, Error> {
-        let dest = PathBuf::from(&self.config.repository.split('/').next_back().unwrap());
+        let dest = PathBuf::from(format!(
+            "{}__{}",
+            self.config.host,
+            self.config
+                .repository
+                .trim_start_matches('/')
+                .replace('/', "-")
+        ));
         if dest.exists() {
             let git_repo = dest.join(".git");
             if git_repo.exists() && git_repo.is_dir() {
@@ -130,7 +134,7 @@ impl Git {
         }
         let url = format!(
             "ssh://{}@{}:{}/{}",
-            &self.config.username, &self.config.host, &self.config.port, &self.config.repository
+            self.config.username, self.config.host, self.config.port, self.config.repository
         );
 
         let status = Command::new(&self.git_cmd)
@@ -140,11 +144,18 @@ impl Git {
             return Err(Error::RuntimeError(io::Error::other(format!(
                 "Unable to execute {} clone {} --depth 1",
                 self.git_cmd.display(),
-                &url
+                url
             ))));
         }
 
-        let dest = PathBuf::from(&self.config.repository.split('/').next_back().unwrap());
+        let dest = PathBuf::from(format!(
+            "{}__{}",
+            self.config.host,
+            self.config
+                .repository
+                .trim_start_matches('/')
+                .replace('/', "-")
+        ));
         if !dest.exists() {
             return Err(Error::DoesNotExist(dest));
         }
@@ -175,6 +186,7 @@ impl remote::Remote for Git {
 
         // cp file <repo_location>/[<subdir>]
         let dest = repo.join(remote_path.strip_prefix("/").unwrap());
+        info!("Copying {} to {}", path.display(), dest.display());
         if !dest.exists() {
             fs::create_dir_all(&dest).await.unwrap();
         }
@@ -194,10 +206,22 @@ impl remote::Remote for Git {
             .args(["switch", "-c", &self.config.branch])
             .status()?;
 
-        // git pull origin branch (ignore failures)
-        Command::new(&self.git_cmd)
+        // git pull origin branch: a failure leaves the worktree with conflict
+        // markers or diverged state that must never be committed as a backup
+        let status = Command::new(&self.git_cmd)
             .args(["pull", "origin", &self.config.branch])
             .status()?;
+        if !status.success() {
+            warn!(
+                "Pull failed in {}, discarding local state and retrying",
+                dest.display()
+            );
+            let _ = Command::new(&self.git_cmd)
+                .args(["reset", "--hard"])
+                .status();
+            let _ = Command::new(&self.git_cmd).args(["clean", "-fd"]).status();
+            fs::copy(path, dest.join(path.file_name().unwrap())).await?;
+        }
 
         // git add . -A
         let status = Command::new(&self.git_cmd)
@@ -225,10 +249,15 @@ impl remote::Remote for Git {
             .status()?;
         if !status.success() {
             return Err(remote::Error::LocalError(io::Error::other(format!(
-                "Unable to execute git add . -A into {}",
+                "Unable to execute git push into {}",
                 dest.display()
             ))));
         }
+        info!(
+            "Successfully pushed {} to {}",
+            path.display(),
+            dest.display()
+        );
         Ok(())
     }
 
@@ -238,19 +267,17 @@ impl remote::Remote for Git {
         remote_path: &Path,
     ) -> Result<(), remote::Error> {
         // Read and compress
-        let compressed_bytes = self.compress_file(path).await?;
+        let compressed_file = self.compress_file(path).await?;
         let remote_path = self.remote_compressed_file_path(remote_path);
-
-        let mut buffer = File::create(&remote_path).await?;
-        buffer.write_all(&compressed_bytes).await?;
 
         defer! {
             #[allow(unused_must_use)]
             {
-                fs::remove_file(&remote_path);
+                fs::remove_file(compressed_file.path());
             }
         }
-        self.upload_file(&remote_path, &remote_path).await?;
+        self.upload_file(compressed_file.path(), &remote_path)
+            .await?;
         Ok(())
     }
 
@@ -263,10 +290,13 @@ impl remote::Remote for Git {
 
         // cp file <repo_location>/[<subdir>]
         let dest = repo.join(remote_path.strip_prefix("/").unwrap());
+        info!("Copying {} file(s) to {}", paths.len(), dest.display());
         if !dest.exists() {
             fs::create_dir_all(&dest).await.unwrap();
         }
         let git_folder = std::path::Component::Normal(".git".as_ref());
+        let mut files_copied = 0;
+        let mut dirs_created = 0;
         for path in paths.iter() {
             // Skip .git and content of this folder
             if path.components().any(|x| x == git_folder) {
@@ -274,10 +304,18 @@ impl remote::Remote for Git {
             }
             if path.is_dir() {
                 fs::create_dir_all(dest.join(path.file_name().unwrap())).await?;
+                dirs_created += 1;
             } else {
                 fs::copy(path, dest.join(path.file_name().unwrap())).await?;
+                files_copied += 1;
             }
         }
+        info!(
+            "Copied {} files and {} directories to {}",
+            files_copied,
+            dirs_created,
+            dest.display()
+        );
 
         // cd <repo path>
         let cwd = std::env::current_dir()?;
@@ -293,10 +331,37 @@ impl remote::Remote for Git {
             .args(["switch", "-c", &self.config.branch])
             .status()?;
 
-        // git pull origin branch (ignore failures)
-        Command::new(&self.git_cmd)
+        // git pull origin branch: a failure leaves the worktree with conflict
+        // markers or diverged state that must never be committed as a backup
+        let status = Command::new(&self.git_cmd)
             .args(["pull", "origin", &self.config.branch])
             .status()?;
+        if !status.success() {
+            warn!(
+                "Pull failed in {}, discarding local state and retrying",
+                dest.display()
+            );
+            let _ = Command::new(&self.git_cmd)
+                .args(["reset", "--hard"])
+                .status();
+            let _ = Command::new(&self.git_cmd).args(["clean", "-fd"]).status();
+            for path in paths {
+                let relative = path.clone();
+                if relative
+                    .components()
+                    .any(|component| component.as_os_str() == ".git")
+                {
+                    continue;
+                }
+                if relative.is_dir() {
+                    if !dest.join(relative.file_name().unwrap()).exists() {
+                        fs::create_dir_all(dest.join(relative.file_name().unwrap())).await?;
+                    }
+                } else {
+                    fs::copy(&relative, dest.join(relative.file_name().unwrap())).await?;
+                }
+            }
+        }
 
         // git add . -A
         let status = Command::new(&self.git_cmd)
@@ -324,10 +389,15 @@ impl remote::Remote for Git {
             .status()?;
         if !status.success() {
             return Err(remote::Error::LocalError(io::Error::other(format!(
-                "Unable to execute git add . -A into {}",
+                "Unable to execute git push into {}",
                 dest.display()
             ))));
         }
+        info!(
+            "Successfully pushed {} file(s) to {}",
+            files_copied,
+            dest.display()
+        );
         Ok(())
     }
 

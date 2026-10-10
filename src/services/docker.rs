@@ -1,4 +1,4 @@
-// Copyright 2022 Paolo Galeone <nessuno@nerdz.eu>
+// Copyright 2022-2026 Paolo Galeone <nessuno@nerdz.eu>
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -58,20 +58,23 @@ impl Docker {
             Ok(cmd) => cmd,
         };
 
-        let args = vec!["run", "--rm", "hello-world"];
+        // `docker info` only talks to the local daemon: unlike
+        // `docker run hello-world` it doesn't pull an image or need
+        // network access.
+        let args = vec!["info"];
         let status = Command::new(&cmd)
             .args(&args)
             .stdout(Stdio::null())
             .status()
             .await;
-        if status.is_err() {
-            return Err(Error::RuntimeError(status.err().unwrap()));
-        }
-        let code = status.unwrap().code().unwrap();
-        if code != 0 {
+        let status = match status {
+            Err(error) => return Err(Error::RuntimeError(error)),
+            Ok(status) => status,
+        };
+        if !status.success() {
             return Err(Error::RuntimeError(io::Error::other(format!(
-                "docker run hello-world failed, exit code {}",
-                code
+                "docker info failed (is the docker daemon running and accessible?), {}",
+                status
             ))));
         }
 
@@ -123,14 +126,24 @@ impl Service for Docker {
 
         let dest_file = File::create(&dest).await?;
 
-        match Command::new(&self.cmd)
+        let status = Command::new(&self.cmd)
             .args(&self.args)
             .stdout(Stdio::from(dest_file.try_into_std().unwrap()))
             .status()
-            .await
-        {
-            Ok(_) => Ok(Dump { path: Some(dest) }),
-            Err(error) => Err(Error::RuntimeError(error).into()),
+            .await;
+        if let Err(error) = status {
+            return Err(Error::RuntimeError(error).into());
+        }
+        let status = status?;
+        match status.success() {
+            true => Ok(Dump { path: Some(dest) }),
+            false => Err(Error::RuntimeError(io::Error::other(format!(
+                "{} {:?} failed, {}",
+                self.cmd.display(),
+                self.args,
+                status
+            )))
+            .into()),
         }
     }
 }

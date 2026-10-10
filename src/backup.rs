@@ -15,9 +15,10 @@
 use crate::config::BackupConfig;
 use crate::remotes::remote;
 use crate::services::service::Service;
+use crate::services::zfs::retention_sort_key;
+use crate::when;
 
 use cron::Schedule;
-use regex::Regex;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -26,7 +27,6 @@ use std::sync::Arc;
 use tokio_cron_scheduler::JobSchedulerError;
 use tokio_cron_scheduler::{Job, JobScheduler};
 
-use chrono::Weekday;
 use log::{error, info};
 
 use uuid::Uuid;
@@ -63,15 +63,30 @@ pub struct Backup {
 }
 
 impl Backup {
-    fn get_hours_and_minutes(when: &str) -> Option<(i8, i8)> {
-        let re = Regex::new(r"(\d{2}):(\d{2})").unwrap();
-        let cap = re.captures(when)?;
+    pub async fn new(
+        name: &str,
+        remote: Box<dyn remote::Remote + Send + Sync>,
+        service: Box<dyn Service + Send + Sync>,
+        config: &BackupConfig,
+    ) -> Result<Backup, Error> {
+        let parsable = when::parse_when(&config.when).ok();
+        let to_parse: &str = parsable.as_deref().unwrap_or(&config.when);
 
-        let ret: (i8, i8) = (cap[1].parse().unwrap(), cap[2].parse().unwrap());
-        if (0..24).contains(&ret.0) && (0..60).contains(&ret.1) {
-            return Some(ret);
-        }
-        None
+        let schedule = cron::Schedule::from_str(to_parse);
+        if schedule.is_err() {
+            return Err(Error::InvalidCronConfiguration(schedule.err().unwrap()));
+        };
+
+        Ok(Backup {
+            name: String::from(name),
+            what: service,
+            r#where: remote,
+            remote_path: PathBuf::from(config.remote_path.clone()),
+            when: config.when.clone(),
+            compress: config.compress,
+            schedule: schedule.unwrap(),
+            keep_last: config.keep_last,
+        })
     }
 
     fn log_result(
@@ -97,196 +112,11 @@ impl Backup {
                 "[{}] Error during upload{} of {}: {}. Error: {}",
                 name,
                 if compress { " or compression" } else { "" },
-                if file.is_dir() { "folder" } else { "file" },
                 file.display(),
+                remote_name,
                 result.err().unwrap()
             );
         }
-    }
-
-    fn parse_daily(input: &str) -> Result<String, Error> {
-        // Daily 12:30
-        let daily = "daily";
-        if input.contains(daily) {
-            let input = input.replace(daily, "");
-
-            let hm = Self::get_hours_and_minutes(&input);
-            if hm.is_none() {
-                return Err(Error::InvalidWhenConfiguration(String::from(
-                    "Unable to find hours:minutes",
-                )));
-            }
-            let hm = hm.unwrap();
-            let input = input.replace(&format!("{:02}:{:02}", hm.0, hm.1), "");
-            let input = input.trim();
-            if !input.is_empty() {
-                return Err(Error::InvalidWhenConfiguration(format!(
-                    "Expected to consume all the when string, unable to parse \
-                    remaining part: {}",
-                    input
-                )));
-            }
-
-            // sec   min   hour   day of month   month   day of week
-            return Ok(format!("{} {} {} {} {} {}", 0, hm.1, hm.0, "*", "*", "*"));
-        }
-        Err(Error::InvalidWhenConfiguration(String::from(
-            "Unable to find daily identifier",
-        )))
-    }
-
-    fn parse_weekly(input: &str) -> Result<String, Error> {
-        // Monday 15:40 or Weekly Monday 15:40
-        let weekdays = [
-            (Weekday::Mon, "Monday"),
-            (Weekday::Tue, "Tuesday"),
-            (Weekday::Wed, "Wednesday"),
-            (Weekday::Thu, "Thursday"),
-            (Weekday::Fri, "Friday"),
-            (Weekday::Sat, "Saturday"),
-            (Weekday::Sun, "Sunday"),
-        ];
-
-        let weekdays = weekdays.iter().map(|d| {
-            (
-                d.0.to_string().to_lowercase(),
-                String::from(d.1).to_lowercase(),
-            )
-        });
-        for day in weekdays {
-            let short = input.contains(&day.0);
-            let long = input.contains(&day.1);
-            if short || long {
-                let input = input.replace(if long { &day.1 } else { &day.0 }, "");
-                let hm = Backup::get_hours_and_minutes(&input);
-                if hm.is_none() {
-                    return Err(Error::InvalidWhenConfiguration(String::from(
-                        "Unable to find hours:minutes",
-                    )));
-                }
-                let hm = hm.unwrap();
-                let input = input.replace(&format!("{:02}:{:02}", hm.0, hm.1), "");
-                let input = input.trim();
-                if !["", "weekly"].contains(&input) {
-                    return Err(Error::InvalidWhenConfiguration(format!(
-                        "Expected to consume all the when string, unable to parse \
-                        remaining part: {}",
-                        input
-                    )));
-                }
-                let day = Weekday::from_str(&day.0).unwrap().number_from_monday();
-
-                // sec   min   hour   day of month   month   day of week
-                return Ok(format!("{} {} {} {} {} {}", 0, hm.1, hm.0, "*", "*", day));
-            }
-        }
-        Err(Error::InvalidWhenConfiguration(String::from(
-            "Unable to find any weekday identifier",
-        )))
-    }
-
-    fn parse_monthly(input: &str) -> Result<String, Error> {
-        // Monthly 1 12:40
-        let monthly = "monthly";
-        if input.contains(monthly) {
-            let input = input.replace(monthly, "");
-            let hm = Backup::get_hours_and_minutes(&input);
-            if hm.is_none() {
-                return Err(Error::InvalidWhenConfiguration(String::from(
-                    "Unable to find hours:minutes",
-                )));
-            }
-            let hm = hm.unwrap();
-            let input = input.replace(&format!("{:02}:{:02}", hm.0, hm.1), "");
-            let input = input.trim();
-            // Input should now contain only the "day of the month"
-
-            let day: i8 = match input.parse() {
-                Ok(day) => day,
-                Err(error) => {
-                    return Err(Error::InvalidWhenConfiguration(format!(
-                        "Unable to correctly parse the string for the day of the month. \
-                        Given input: {}. Error: {}",
-                        input, error
-                    )))
-                }
-            };
-
-            let valid_days = 1..32;
-            if !valid_days.contains(&day) {
-                return Err(Error::InvalidWhenConfiguration(String::from(
-                    "Invalid day of the month specified, out of range [1,31]",
-                )));
-            }
-
-            // sec   min   hour   day of month   month   day of week
-            return Ok(format!("{} {} {} {} {} {}", 0, hm.1, hm.0, day, "*", "*"));
-        }
-        Err(Error::InvalidWhenConfiguration(String::from(
-            "Unable to find monthly identifier",
-        )))
-    }
-
-    fn parse_when(when: &str) -> Result<String, Error> {
-        // sec   min   hour   day of month   month   day of week
-        // *     *     *      *              *       *
-        let input = when.to_lowercase();
-        let daily = Backup::parse_daily(&input);
-        if daily.is_ok() {
-            return daily;
-        }
-
-        let monthly = Backup::parse_monthly(&input);
-        if monthly.is_ok() {
-            return monthly;
-        }
-
-        let weekly = Backup::parse_weekly(&input);
-        if weekly.is_ok() {
-            return weekly;
-        }
-
-        Err(Error::InvalidWhenConfiguration(format!(
-            "Unable to parse for:\n\
-        Daily: {}\n
-        Weekly: {}\n
-        Monthly: {}",
-            daily.unwrap_err(),
-            weekly.unwrap_err(),
-            monthly.unwrap_err()
-        )))
-    }
-    pub async fn new(
-        name: &str,
-        remote: Box<dyn remote::Remote + Send + Sync>,
-        service: Box<dyn Service + Send + Sync>,
-        config: &BackupConfig,
-    ) -> Result<Backup, Error> {
-        let when_to_schedule = Backup::parse_when(&config.when);
-        let to_parse: &str;
-        let parsable: String;
-        if let Ok(value) = when_to_schedule {
-            parsable = value;
-            to_parse = &parsable;
-        } else {
-            to_parse = &config.when;
-        };
-
-        let schedule = cron::Schedule::from_str(to_parse);
-        if schedule.is_err() {
-            return Err(Error::InvalidCronConfiguration(schedule.err().unwrap()));
-        };
-
-        Ok(Backup {
-            name: String::from(name),
-            what: service,
-            r#where: remote,
-            remote_path: PathBuf::from(config.remote_path.clone()),
-            when: config.when.clone(),
-            compress: config.compress,
-            schedule: schedule.unwrap(),
-            keep_last: config.keep_last,
-        })
     }
 
     pub async fn schedule(
@@ -308,7 +138,7 @@ impl Backup {
                         let keep_last = inst.keep_last;
 
                         // First call dump, to trigger the dump service if present
-                        info!("[{}] Calling dump...", &name);
+                        info!("[{}] Calling dump...", name);
                         let dump = match service.dump().await {
                             Err(error) => {
                                 error!("{}", Error::GeneralError(error));
@@ -370,6 +200,9 @@ impl Backup {
                             local_files = vec![PathBuf::from(local_prefix)];
                         }
 
+                        // Set when any upload fails: the service is told after the uploads.
+                        let mut upload_failed = false;
+
                         // Special case in which we want to upload a folder without compression
                         // If all the files share the same prefix, we upload all the files in this prefix.
                         // The remote should handle eventual incremental backup.
@@ -381,6 +214,7 @@ impl Backup {
                                 remote_path.display()
                             );
                             let result = remote.upload_folder(&local_files, remote_path).await;
+                            upload_failed |= result.is_err();
                             Backup::log_result(
                                 result,
                                 &name,
@@ -403,8 +237,7 @@ impl Backup {
                                 remote_prefix.join(file.strip_prefix(local_prefix).unwrap())
                             };
 
-                            let result: Result<(), remote::Error>;
-                            if file.is_dir() {
+                            let result = if file.is_dir() {
                                 // compress for sure, the uncompressed scenarios has been treated
                                 // outside this loop
                                 info!(
@@ -413,7 +246,7 @@ impl Backup {
                                     file.display(),
                                     remote_path.display()
                                 );
-                                result = remote.upload_folder_compressed(&file, &remote_path).await;
+                                remote.upload_folder_compressed(&file, &remote_path).await
                             } else if compress {
                                 info!(
                                     "[{}] Compressing file {} and uploading to {}",
@@ -421,7 +254,7 @@ impl Backup {
                                     file.display(),
                                     remote_path.display()
                                 );
-                                result = remote.upload_file_compressed(&file, &remote_path).await;
+                                remote.upload_file_compressed(&file, &remote_path).await
                             } else {
                                 info!(
                                     "[{}] Uploading file {} to {}",
@@ -429,30 +262,27 @@ impl Backup {
                                     file.display(),
                                     remote_path.display()
                                 );
-                                result = remote.upload_file(&file, &remote_path).await;
-                            }
+                                remote.upload_file(&file, &remote_path).await
+                            };
 
-                            // Handle keep_last
-                            if let Some(to_keep) = keep_last {
+                            upload_failed |= result.is_err();
+
+                            // Handle keep_last. Skipped when the upload failed: the
+                            // remote did not get a new backup, so nothing old goes.
+                            if let (Some(to_keep), true) = (keep_last, result.is_ok()) {
                                 let to_keep = to_keep as usize;
                                 match remote.enumerate(remote_path.parent().unwrap()).await {
-                                    Ok(mut list) => {
-                                        if list.len() > to_keep {
-                                            list.sort();
-                                            list.reverse();
-                                            for delete_me in &list[to_keep..] {
-                                                if let Some(error) = remote
-                                                    .delete(&PathBuf::from(delete_me))
-                                                    .await
-                                                    .err()
-                                                {
-                                                    error!(
-                                                        "[{}] Error during delete of {}: {}",
-                                                        name, delete_me, error
-                                                    );
-                                                } else {
-                                                    info!("[{}] Deleted {}", name, delete_me);
-                                                }
+                                    Ok(list) => {
+                                        for delete_me in &to_prune(list, to_keep) {
+                                            if let Some(error) =
+                                                remote.delete(&PathBuf::from(delete_me)).await.err()
+                                            {
+                                                error!(
+                                                    "[{}] Error during delete of {}: {}",
+                                                    name, delete_me, error
+                                                );
+                                            } else {
+                                                info!("[{}] Deleted {}", name, delete_me);
                                             }
                                         }
                                     }
@@ -472,6 +302,10 @@ impl Backup {
                             );
                         }
 
+                        if upload_failed {
+                            service.upload_failed(&dump).await;
+                        }
+
                         info!(
                             "[{}] Next run: {}",
                             name,
@@ -485,13 +319,58 @@ impl Backup {
     }
 }
 
+/// The remote objects to delete so that only the `to_keep` newest remain.
+/// Objects are ordered chronologically by [retention_sort_key], so zfs
+/// `full`/`inc` dump files are pruned by age and not by kind.
+fn to_prune(mut list: Vec<String>, to_keep: usize) -> Vec<String> {
+    if list.len() <= to_keep {
+        return vec![];
+    }
+    list.sort_by_cached_key(|name| retention_sort_key(name));
+    list.reverse();
+    list.split_off(to_keep)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use croner::Cron;
 
+    #[test]
+    fn to_prune_keeps_the_newest_by_name() {
+        let list = vec![
+            "p/2026-10-03-22:00-db.gz".to_string(),
+            "p/2026-10-05-22:00-db.gz".to_string(),
+            "p/2026-10-04-22:00-db.gz".to_string(),
+        ];
+        assert_eq!(to_prune(list.clone(), 2), vec!["p/2026-10-03-22:00-db.gz"]);
+        assert!(to_prune(list, 3).is_empty());
+    }
+
+    #[test]
+    fn to_prune_zfs_chain_across_a_new_full() {
+        // daily backups, monthly full on the 1st, keep_last = 32: the
+        // October chain (full on Oct 5 + daily incs) followed by the
+        // November full and a week of incs.
+        let file = |kind: &str, month: u32, day: u32| {
+            format!("gtr7/zfs/storage/storage-{kind}-2026{month:02}{day:02}-220000.snapshot")
+        };
+        let mut list = vec![file("full", 10, 5)];
+        list.extend((6..=31).map(|d| file("inc", 10, d)));
+        list.push(file("full", 11, 1));
+        list.extend((2..=7).map(|d| file("inc", 11, d)));
+
+        let pruned = to_prune(list.clone(), 32);
+        // Only the oldest objects go, and the November full is kept:
+        // the remote stays restorable from it.
+        assert_eq!(pruned, vec![file("inc", 10, 6), file("full", 10, 5)]);
+        let kept: Vec<_> = list.iter().filter(|f| !pruned.contains(f)).collect();
+        assert!(kept.contains(&&file("full", 11, 1)));
+        assert_eq!(kept.len(), 32);
+    }
+
     fn validate_cron_expression(when: &str) {
-        let result = Backup::parse_when(when);
+        let result = when::parse_when(when);
         assert!(
             result.is_ok(),
             "Failed to parse when string '{}': {}",
@@ -501,11 +380,7 @@ mod tests {
         let cron_str = result.unwrap();
         // Same configuration of tokio-cron-scheduler
         assert!(
-            Cron::new(&cron_str)
-                .with_seconds_required()
-                .with_dom_and_dow()
-                .parse()
-                .is_ok(),
+            Cron::from_str(&cron_str).is_ok(),
             "Invalid croner expression '{}' for when string '{}'",
             cron_str,
             when
@@ -521,11 +396,11 @@ mod tests {
         validate_cron_expression("DAILY 11:11");
 
         // Invalid cases
-        assert!(Backup::parse_when("dayly 00:00").is_err());
-        assert!(Backup::parse_when("daily 55:00").is_err());
-        assert!(Backup::parse_when("daily 00:61").is_err());
-        assert!(Backup::parse_when("daily 00:60").is_err());
-        assert!(Backup::parse_when("daily 24:01").is_err());
+        assert!(when::parse_when("dayly 00:00").is_err());
+        assert!(when::parse_when("daily 55:00").is_err());
+        assert!(when::parse_when("daily 00:61").is_err());
+        assert!(when::parse_when("daily 00:60").is_err());
+        assert!(when::parse_when("daily 24:01").is_err());
     }
 
     #[test]
@@ -549,13 +424,13 @@ mod tests {
         validate_cron_expression(" sunday 12:30");
 
         // Invalid cases
-        assert!(Backup::parse_when("watly monzay 00:00").is_err());
-        assert!(Backup::parse_when("monzay 00:00").is_err());
-        assert!(Backup::parse_when("Moonday 00:00").is_err());
-        assert!(Backup::parse_when("Sundays 1:00").is_err());
-        assert!(Backup::parse_when("Today 00:00").is_err());
-        assert!(Backup::parse_when("Tomorrow 00:00").is_err());
-        assert!(Backup::parse_when("Toyota -1:00").is_err());
+        assert!(when::parse_when("watly monzay 00:00").is_err());
+        assert!(when::parse_when("monzay 00:00").is_err());
+        assert!(when::parse_when("Moonday 00:00").is_err());
+        assert!(when::parse_when("Sundays 1:00").is_err());
+        assert!(when::parse_when("Today 00:00").is_err());
+        assert!(when::parse_when("Tomorrow 00:00").is_err());
+        assert!(when::parse_when("Toyota -1:00").is_err());
     }
 
     #[test]
@@ -565,9 +440,9 @@ mod tests {
         validate_cron_expression("Monthly 31 02:30");
 
         // Invalid cases
-        assert!(Backup::parse_when("Monthly 00:00").is_err());
-        assert!(Backup::parse_when("Monthtly -1 00:00").is_err());
-        assert!(Backup::parse_when("Monthtly 0 00:00").is_err());
-        assert!(Backup::parse_when("Monthtly 32 00:00").is_err());
+        assert!(when::parse_when("Monthly 00:00").is_err());
+        assert!(when::parse_when("Monthtly -1 00:00").is_err());
+        assert!(when::parse_when("Monthtly 0 00:00").is_err());
+        assert!(when::parse_when("Monthtly 32 00:00").is_err());
     }
 }

@@ -80,6 +80,22 @@ When configuring the backups, the field **when** accepts configuration strings i
     container_name = "docker_postgres_1"
     command = "pg_dumpall -c -U postgres" # dump to stdout always
 
+[zfs]
+    # the user needs zfs permissions on the datasets (bacup verifies them at startup):
+    # zfs allow $USER destroy,mount,send,snapshot <dataset>
+    # (permissions are inherited by child datasets)
+    [zfs.root]
+    snapshot_name = "root-fs"
+    dataset = "zroot"
+    [zfs.storage]
+    snapshot_name = "storage-fs"
+    dataset = "storage"
+    # optional: how often a full backup is taken. Accepts the same format
+    # as the `when` field (e.g. "monthly 1 01:00") or a raw cron expression.
+    # The runs in between take incremental backups against the latest
+    # snapshot. When omitted every run is a full backup.
+    #full_when = "monthly 1 01:00"
+
 # mapping services to remote
 [backup]
     # Compress the DB dump and upload it to aws
@@ -145,6 +161,36 @@ When `compression = true`, the file/folder are compressed using Gzip and the fil
 YYYY-MM-DD-hh:mm-filename.gz # or .tar.gz if filename is an archive
 ```
 
+## ZFS backups
+
+The `zfs` service backs up a dataset tree with `zfs snapshot` + `zfs send`. Every service produces one dump file per run, which is then uploaded to the remote like any other backup: the schedule, `remote_path` and `keep_last` are the usual `[backup.<name>]` fields (`what = "zfs.<service>"`).
+
+### Full and incremental backups
+
+- On every run bacup creates a snapshot `dataset@snapshot_name-<kind>-<timestamp>` on the dataset and all of its children, then `zfs send -R` writes it to the working directory as `<service>-<kind>-<timestamp>.snapshot` (`<kind>` is `full` or `inc`).
+- Without `full_when` every run is a full backup.
+- With `full_when` set, a full backup is taken when the schedule is due (the first run is always a full) and the runs in between are **incrementals** against the latest existing snapshot of the chain, so they only contain what changed since the last run and stay small.
+- If an incremental can't be sent (e.g. a child dataset was destroyed and recreated), bacup destroys the incremental snapshot and retries the run as a full backup, so a run never fails silently.
+- If a dump can't be uploaded, bacup destroys the snapshot it was sent from, so the next run never builds an incremental on a stream the remote doesn't have: it takes an incremental against the previous snapshot instead (or a full, if the failed run was the full). A failed upload also skips the `keep_last` pruning for that run.
+- Before each **full** backup the previous chain is replaced: all older snapshots of the service (including those on child datasets) are destroyed, so `zfs send -R` does not stream them inside the new full (snapshots taken by other tools on the same datasets are still included). If the full can't be sent, its snapshot is destroyed too and the next run takes a full again. Local dump files are removed after the upload; on the remote, dump files are pruned by `keep_last` as usual.
+- The dump is produced with `zfs send -c -L`: blocks that are compressed on disk stay compressed in the dump file (the `-c` flag needs OpenZFS >= 2.1.1 on the sender). If the dataset uses compression (check with `zfs get -o value compression <dataset>`), set `compress = false` on the backup — gzip'ing an already-compressed stream at upload time is wasted CPU with no size gain. Keep `compress = true` only for uncompressed datasets. bacup logs a hint at startup when the dataset is compressed.
+
+### Restoring
+
+Dump files are standard `zfs receive` streams. To restore, take the newest full and then apply every incremental after it, in timestamp order:
+
+```
+zfs receive -F targetds < <service>-full-20260901-010000.snapshot
+zfs receive -F targetds < <service>-inc-20260902-010000.snapshot
+zfs receive -F targetds < <service>-inc-20260903-010000.snapshot
+```
+
+Dumps of compressed datasets carry compressed blocks (sent with `-c`), so the receiving pool must have the matching compression features enabled (`lz4_compress`/`zstd_compress`) — i.e. the same or a newer ZFS than the original pool.
+
+A restore therefore needs the newest full and every incremental taken after it. If you plan to restore from the remote, size `keep_last` so it can never prune a full that incrementals on top of it still need.
+
+bacup enforces this at startup: for every zfs backup with a `full_when`, it computes the longest stretch of incremental runs between two fulls from the two schedules and refuses to start if `keep_last` is set below what keeps a full and all its incrementals. Without `keep_last` nothing is pruned, so nothing can break the chain.
+
 ## Installation & service setup
 
 ```
@@ -162,9 +208,25 @@ sudo cp misc/systemd/bacup@.service /usr/lib/systemd/system/
 then, the service can be enabled/started in the usual systemd way:
 
 ```
-sudo systemctl start bacup@$USER.service
-sudo systemctl enable bacup@$USER.service
+sudo systemctl enable --now bacup@$USER.service
 ```
+
+**Note**: the working directory is important if you plan to back-up big files. The files are created in that directory before being uploaded, so set it to a location where you have the write right and enough space.
+
+## Development
+
+To test an unreleased branch, build and install it from your local checkout — it replaces the crates.io binary in `~/.cargo/bin`:
+
+```
+git clone https://github.com/galeone/bacup
+cd bacup
+git checkout <branch>
+cargo install --path .
+```
+
+Useful before wiring the new version into the systemd service, or to quickly verify a fix on a real backup. When a release you like is out, `cargo install bacup` puts the released binary back.
+
+Alternatively, `cargo build --release` leaves the binary at `target/release/bacup` without touching the installed one — handy for a one-off run (it still reads `$HOME/.bacup/config.toml`).
 
 ## Remote configuration
 

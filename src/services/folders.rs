@@ -1,4 +1,4 @@
-// Copyright 2022 Paolo Galeone <nessuno@nerdz.eu>
+// Copyright 2022-2026 Paolo Galeone <nessuno@nerdz.eu>
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -137,7 +137,7 @@ mod tests {
         assert!(folder.dump().await.is_ok());
 
         let files = folder.list().await;
-        assert!(files.len() > 0);
+        assert!(!files.is_empty());
 
         let git_info = cwd.join(".git").join("info");
         assert!(files.contains(&git_info));
@@ -173,7 +173,7 @@ mod tests {
         assert!(folder.dump().await.is_ok());
 
         let files = folder.list().await;
-        assert!(files.len() > 0);
+        assert!(!files.is_empty());
 
         let lib_path = cwd.join("src").join("lib.rs");
         assert!(files.contains(&lib_path));

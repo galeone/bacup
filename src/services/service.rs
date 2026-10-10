@@ -1,4 +1,4 @@
-// Copyright 2022 Paolo Galeone <nessuno@nerdz.eu>
+// Copyright 2022-2026 Paolo Galeone <nessuno@nerdz.eu>
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -25,7 +25,11 @@ pub struct Dump {
 impl Drop for Dump {
     fn drop(&mut self) {
         if let Some(path) = &self.path {
-            // If we created a dump file, we should take care of removing it
+            // If we created a dump file, we should take care of removing it.
+            // Note: this only covers normal termination of the backup job;
+            // a crash (panic / kill) between the dump and this drop leaves
+            // the file behind — such stale files are not cleaned up by the
+            // service and must be removed manually if they appear.
             if path.exists() {
                 #[allow(unused_must_use)]
                 {
@@ -38,6 +42,15 @@ impl Drop for Dump {
 
 #[async_trait]
 pub trait Service: DynClone {
+    // dump executes the dump command and creates the file/files to backup. Those files will be listed by list().
     async fn dump(&self) -> Result<Dump, Box<dyn std::error::Error>>;
+
+    // list returns the list of the paths that should be uploaded to the Remote - those are created by dump().
     async fn list(&self) -> Vec<PathBuf>;
+
+    // upload_failed is called when the files of `dump` did not all reach the
+    // Remote. Services whose next dump builds on this one (e.g. zfs
+    // incrementals) undo it here, so the next run does not depend on data
+    // the Remote never received. The default does nothing.
+    async fn upload_failed(&self, _dump: &Dump) {}
 }
