@@ -204,10 +204,32 @@ ping_url = "https://hc-ping.com/your-check-uuid"
 ```
 
 - When a run begins, bacup sends `GET <ping_url>/start`.
-- When the run succeeds (dump and every upload worked), bacup sends `GET <ping_url>`.
-- When the run fails, no success ping is sent.
+- When the run succeeds (dump, every upload and the `keep_last` pruning worked), bacup sends `GET <ping_url>`.
+- When the run fails, bacup sends `POST <ping_url>/fail` with a plain-text report, so the check goes down right away:
 
-The monitoring service alerts you when a success ping doesn't arrive in time. This is a dead man's switch: it also covers the failures bacup can't report itself, such as the process being dead, the server down, or a config that doesn't load.
+  ```
+  bacup backup "blog" failed
+  backup: blog (postgres.blog -> aws.backups)
+  step: compress+upload
+  error: <the error>
+  host: myserver
+  version: bacup 0.3.0
+  ```
+
+  `step` is one of:
+
+  | step | meaning |
+  |---|---|
+  | `dump` | the service's dump failed (`pg_dump`, `docker exec`, `zfs send`, ...) |
+  | `list` | the service produced nothing to back up (e.g. an empty folder) |
+  | `upload`, `compress+upload` | at least one upload failed; with `compress = true` compression and upload are one step |
+  | `prune` | the new backup was uploaded, but deleting old ones for `keep_last` failed |
+  | `panic` | the run crashed; the error is the panic message |
+  | `startup` | bacup could not start (a remote or service failed to initialize); sent to every backup with a `ping_url`, then bacup exits |
+
+  healthchecks.io stores the report with the ping: open the check and look at its Events. AWS access key IDs in the report are masked (`AKIA...WXYZ`), and the report is cut at 10 kB.
+
+The monitoring service also alerts you when a success ping doesn't arrive in time. This is a dead man's switch: it covers the failures bacup can't report itself, such as the process being dead, the server down, or a config file that doesn't parse.
 
 A ping never fails a backup. Each ping has a 10 s timeout and is retried up to 3 times on network errors, timeouts and HTTP 5xx; then bacup logs a warning and goes on. The URL is never written to the logs, because anyone who has it can ping your check. Keep it as private as the rest of the config.
 

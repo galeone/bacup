@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use std::string::String;
 
-use bacup::backup::Backup;
+use bacup::backup::{report_startup_failure, Backup, StartupTarget};
 use bacup::config::{BackupConfig, Config, ZfsConfig};
 
 use bacup::remotes::aws::AwsBucket;
@@ -114,6 +114,28 @@ async fn main() -> Result<(), i32> {
         }
     };
 
+    // From here on the config is loaded, so a startup error can be sent
+    // to every backup's ping_url: the checks go down at once instead of
+    // when the next heartbeat is late.
+    let startup_targets = StartupTarget::from_config(&config.backup);
+    let _scheduler = match start(config).await {
+        Ok(scheduler) => scheduler,
+        Err(message) => {
+            error!("{}", message);
+            report_startup_failure(&startup_targets, &message).await;
+            return Err(-1);
+        }
+    };
+
+    use tokio::time::Duration;
+    loop {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// Configures remotes, services and backups, and starts the scheduler.
+/// Returns the error message of the first thing that can't be set up.
+async fn start(config: Config) -> Result<JobScheduler, String> {
     let mut remotes: HashMap<String, Box<dyn Remote + Send + Sync>> = HashMap::new();
 
     match config.aws {
@@ -125,11 +147,10 @@ async fn main() -> Result<(), i32> {
                         info!("Remote aws.{} configured", bucket_name);
                     }
                     Err(error) => {
-                        error!(
+                        return Err(format!(
                             "Failed to configure remote aws.{}: {:?}",
                             bucket_name, error
-                        );
-                        return Err(-1);
+                        ));
                     }
                 }
             }
@@ -146,8 +167,10 @@ async fn main() -> Result<(), i32> {
                         info!("Remote ssh.{} configured", hostname);
                     }
                     Err(error) => {
-                        error!("Failed to configure remote ssh.{}: {}", hostname, error);
-                        return Err(-1);
+                        return Err(format!(
+                            "Failed to configure remote ssh.{}: {}",
+                            hostname, error
+                        ));
                     }
                 }
             }
@@ -164,8 +187,10 @@ async fn main() -> Result<(), i32> {
                         info!("Remote localhost.{} configured", name);
                     }
                     Err(error) => {
-                        error!("Failed to configure remote localhost.{}: {}", name, error);
-                        return Err(-1);
+                        return Err(format!(
+                            "Failed to configure remote localhost.{}: {}",
+                            name, error
+                        ));
                     }
                 }
             }
@@ -182,8 +207,10 @@ async fn main() -> Result<(), i32> {
                         info!("Remote git.{} configured", name);
                     }
                     Err(error) => {
-                        error!("Failed to configure remote git.{}: {}", name, error);
-                        return Err(-1);
+                        return Err(format!(
+                            "Failed to configure remote git.{}: {}",
+                            name, error
+                        ));
                     }
                 }
             }
@@ -195,10 +222,7 @@ async fn main() -> Result<(), i32> {
     // a complete chain (a full and its incrementals), so refuse to start
     // when keep_last would prune away older fulls.
     for (backup_name, backup_config) in &config.backup {
-        if let Err(message) = check_zfs_keep_last(backup_name, backup_config, &config.zfs) {
-            error!("{message}");
-            return Err(-1);
-        }
+        check_zfs_keep_last(backup_name, backup_config, &config.zfs)?;
     }
 
     let mut services: HashMap<String, Box<dyn Service + Send + Sync>> = HashMap::new();
@@ -211,11 +235,10 @@ async fn main() -> Result<(), i32> {
                         services.insert(key, Box::new(service));
                     }
                     Err(error) => {
-                        error!(
+                        return Err(format!(
                             "Failed to configure service folders.{}: {}",
                             location_name, error
-                        );
-                        return Err(-1);
+                        ));
                     }
                 }
             }
@@ -231,11 +254,10 @@ async fn main() -> Result<(), i32> {
                         services.insert(key, Box::new(service));
                     }
                     Err(error) => {
-                        error!(
+                        return Err(format!(
                             "Failed to configure service postgres.{}: {}",
                             service_name, error
-                        );
-                        return Err(-1);
+                        ));
                     }
                 }
             }
@@ -251,11 +273,10 @@ async fn main() -> Result<(), i32> {
                         services.insert(key, Box::new(service));
                     }
                     Err(error) => {
-                        error!(
+                        return Err(format!(
                             "Failed to configure service docker.{}: {}",
                             service_name, error
-                        );
-                        return Err(-1);
+                        ));
                     }
                 }
             }
@@ -275,11 +296,10 @@ async fn main() -> Result<(), i32> {
                     }
 
                     Err(error) => {
-                        error!(
+                        return Err(format!(
                             "Failed to configure service zfs.{}: {}",
                             service_name, error
-                        );
-                        return Err(-1);
+                        ));
                     }
                 }
             }
@@ -290,23 +310,21 @@ async fn main() -> Result<(), i32> {
     let mut backup: HashMap<String, Arc<Backup>> = HashMap::new();
     for (backup_name, config) in config.backup {
         if !services.contains_key(&config.what) {
-            error!(
+            return Err(format!(
                 "Backup {}. Invalid what: {}, not available in the configured services: {:?}",
                 backup_name,
                 config.what,
                 services.keys()
-            );
-            return Err(-1);
+            ));
         }
 
         if !remotes.contains_key(&config.r#where) {
-            error!(
+            return Err(format!(
                 "Backup {}. Invalid where: {}, not available in the configured remotes: {:?}",
                 backup_name,
                 config.r#where,
                 remotes.keys()
-            );
-            return Err(-1);
+            ));
         }
 
         let backup_entry = match Backup::new(
@@ -319,8 +337,10 @@ async fn main() -> Result<(), i32> {
         {
             Ok(backup) => Arc::new(backup),
             Err(error) => {
-                error!("Failed to configure backup {}: {}", backup_name, error);
-                return Err(-1);
+                return Err(format!(
+                    "Failed to configure backup {}: {}",
+                    backup_name, error
+                ));
             }
         };
         backup.insert(backup_name.clone(), backup_entry);
@@ -349,23 +369,20 @@ async fn main() -> Result<(), i32> {
     }
 
     let Ok(mut scheduler) = JobScheduler::new().await else {
-        error!("Unable to create the job scheduler");
-        return Err(-1);
+        return Err("Unable to create the job scheduler".to_string());
     };
     // scheduler.shutdown_on_ctrl_c();
 
     for (name, job) in backup {
         let Some(upcoming) = job.schedule.upcoming(chrono::Utc).take(1).next() else {
-            error!("Backup {}: no upcoming run in schedule", name);
-            return Err(-1);
+            return Err(format!("Backup {}: no upcoming run in schedule", name));
         };
         let schedule = job.schedule.clone();
         let res = job.schedule(&mut scheduler, schedule).await;
 
         match res {
             Err(error) => {
-                error!("Error during scheduling: {:?}", error);
-                return Err(-1);
+                return Err(format!("Error during scheduling: {:?}", error));
             }
             Ok(uuid) => info!(
                 "Successfully scheduled {} ({}). Next run: {}",
@@ -375,13 +392,9 @@ async fn main() -> Result<(), i32> {
     }
 
     if scheduler.start().await.is_err() {
-        error!("Unable to start the scheduler");
-        return Err(-1);
+        return Err("Unable to start the scheduler".to_string());
     }
-    use tokio::time::Duration;
-    loop {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    Ok(scheduler)
 }
 
 #[cfg(test)]
