@@ -15,6 +15,7 @@
 use crate::config::BackupConfig;
 use crate::ping::{Pinger, Signal};
 use crate::remotes::remote;
+use crate::services::folders;
 use crate::services::service::Service;
 use crate::services::zfs::retention_sort_key;
 use crate::when;
@@ -58,6 +59,8 @@ impl fmt::Display for Error {
 pub enum Step {
     /// bacup could not start (a remote or service failed to initialize).
     Startup,
+    /// A folder's `max_age` check failed: its newest file is too old.
+    Freshness,
     Dump,
     /// The service produced nothing to back up.
     List,
@@ -76,6 +79,7 @@ impl fmt::Display for Step {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Step::Startup => write!(f, "startup"),
+            Step::Freshness => write!(f, "freshness"),
             Step::Dump => write!(f, "dump"),
             Step::List => write!(f, "list"),
             Step::Upload => write!(f, "upload"),
@@ -268,7 +272,10 @@ impl Backup {
         // First call dump, to trigger the dump service if present
         info!("[{}] Calling dump...", name);
         let dump = service.dump().await.map_err(|error| Failure {
-            step: Step::Dump,
+            step: match error.downcast_ref::<folders::Error>() {
+                Some(error) if error.is_freshness() => Step::Freshness,
+                _ => Step::Dump,
+            },
             error: error.to_string(),
         })?;
 
@@ -846,6 +853,31 @@ mod tests {
                 .await;
             backup.run_and_report().await;
             assert_failed(&endpoint, "list");
+        }
+
+        #[tokio::test]
+        async fn stale_input_is_reported_and_not_uploaded() {
+            let endpoint = FakeEndpoint::start(Reply::Status(200)).await;
+            let fixture = Fixture::new();
+            let old = std::time::SystemTime::now() - std::time::Duration::from_secs(31 * 3600);
+            std::fs::File::options()
+                .write(true)
+                .open(fixture.source.path().join("data.txt"))
+                .unwrap()
+                .set_modified(old)
+                .unwrap();
+            let folder = Folder::new(fixture.source.path().to_str().unwrap())
+                .await
+                .unwrap()
+                .with_max_age(Some(folders::parse_duration("26h").unwrap()));
+            let backup = fixture
+                .backup(Some(Box::new(folder)), Some(endpoint.base.clone()))
+                .await;
+            backup.run_and_report().await;
+            let body = assert_failed(&endpoint, "freshness");
+            assert!(body.contains("is 31h old (max_age 26h)"), "{}", body);
+            // Nothing reached the remote.
+            assert!(!fixture.remote.path().join("out").exists());
         }
 
         #[tokio::test]
