@@ -96,6 +96,10 @@ pub struct ZfsConfig {
 #[serde(deny_unknown_fields)]
 pub struct FoldersConfig {
     pub pattern: String,
+    /// Optional freshness check, e.g. `"26h"`: the backup fails instead of
+    /// uploading when the newest file matched by `pattern` is older.
+    #[serde(default)]
+    pub max_age: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -223,6 +227,29 @@ mod tests {
 
         let bad = format!("{base}\nping_url = \"not a url\"\n");
         assert!(toml::from_str::<Config>(&bad).is_err());
+    }
+
+    #[test]
+    fn folder_max_age_is_optional() {
+        let txt = r#"
+            [folders.plain]
+            pattern = "/srv/plain/"
+
+            [folders.vault]
+            pattern = "/var/backups/reports/"
+            max_age = "6h"
+
+            [backup.vault]
+            what = "folders.vault"
+            where = "aws.bucket"
+            when = "daily 03:30"
+            remote_path = "/reports/"
+            compress = true
+        "#;
+        let config: Config = toml::from_str(txt).unwrap();
+        let folders = config.folders.unwrap();
+        assert!(folders["plain"].max_age.is_none());
+        assert_eq!(folders["vault"].max_age.as_deref(), Some("6h"));
     }
 
     #[test]

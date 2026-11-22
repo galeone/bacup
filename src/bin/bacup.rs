@@ -30,7 +30,7 @@ use bacup::remotes::ssh::Ssh;
 use bacup::remotes::remote::Remote;
 
 use bacup::services::docker::Docker;
-use bacup::services::folders::Folder;
+use bacup::services::folders::{parse_duration, Folder};
 use bacup::services::postgresql::PostgreSql;
 use bacup::services::service::Service;
 
@@ -230,9 +230,19 @@ async fn start(config: Config) -> Result<JobScheduler, String> {
         Some(folders) => {
             for (location_name, folder) in folders {
                 let key = format!("folders.{}", location_name);
+                let max_age = match folder.max_age.as_deref().map(parse_duration) {
+                    None => None,
+                    Some(Ok(max_age)) => Some(max_age),
+                    Some(Err(error)) => {
+                        return Err(format!(
+                            "Failed to configure service folders.{}: max_age: {}",
+                            location_name, error
+                        ));
+                    }
+                };
                 match Folder::new(&folder.pattern).await {
                     Ok(service) => {
-                        services.insert(key, Box::new(service));
+                        services.insert(key, Box::new(service.with_max_age(max_age)));
                     }
                     Err(error) => {
                         return Err(format!(
