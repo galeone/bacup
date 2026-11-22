@@ -107,6 +107,8 @@ When configuring the backups, the field **when** accepts configuration strings i
     remote_path = "/service1/database/"
     compress = true
     keep_last = 7
+    # optional: heartbeat URL (e.g. healthchecks.io), see "Monitoring"
+    #ping_url = "https://hc-ping.com/your-check-uuid"
 
     # Dump the DB and upload it to aws (no compression)
     # every first day of the month
@@ -190,6 +192,29 @@ Dumps of compressed datasets carry compressed blocks (sent with `-c`), so the re
 A restore therefore needs the newest full and every incremental taken after it. If you plan to restore from the remote, size `keep_last` so it can never prune a full that incrementals on top of it still need.
 
 bacup enforces this at startup: for every zfs backup with a `full_when`, it computes the longest stretch of incremental runs between two fulls from the two schedules and refuses to start if `keep_last` is set below what keeps a full and all its incrementals. Without `keep_last` nothing is pruned, so nothing can break the chain.
+
+## Monitoring
+
+Every backup accepts an optional `ping_url`: a [healthchecks.io](https://healthchecks.io)-style heartbeat URL (any service with the same API works, including a self-hosted Healthchecks).
+
+```toml
+[backup.service1_db_compress]
+# ...
+ping_url = "https://hc-ping.com/your-check-uuid"
+```
+
+- When a run begins, bacup sends `GET <ping_url>/start`.
+- When the run succeeds (dump and every upload worked), bacup sends `GET <ping_url>`.
+- When the run fails, no success ping is sent.
+
+The monitoring service alerts you when a success ping doesn't arrive in time. This is a dead man's switch: it also covers the failures bacup can't report itself, such as the process being dead, the server down, or a config that doesn't load.
+
+A ping never fails a backup. Each ping has a 10 s timeout and is retried up to 3 times on network errors, timeouts and HTTP 5xx; then bacup logs a warning and goes on. The URL is never written to the logs, because anyone who has it can ping your check. Keep it as private as the rest of the config.
+
+Setting up the check on healthchecks.io:
+
+- **Schedule**: use the backup's `when` as a cron expression, in the UTC time zone. For example `daily 03:30` is `30 3 * * *`.
+- **Grace time**: longer than the slowest run you expect. Because of the `start` ping, the check also goes down when a run starts and doesn't succeed within the grace time (a hung upload, a crash in the middle of a run).
 
 ## Installation & service setup
 
