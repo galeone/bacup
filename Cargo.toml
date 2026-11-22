@@ -44,3 +44,10 @@ croner = "4.0.1"
 astral-tokio-tar = "0.7.0"
 get-file-size = "0.1.2"
 sysinfo = "0.39.6"
+# Heartbeat pings. Same versions and TLS stack (rustls + aws-lc-rs, native
+# roots) the AWS SDK already pulls in: no new crates in Cargo.lock.
+bytes = "1.12.1"
+http-body-util = "0.1.5"
+hyper = { version = "1.11.1", features = ["client", "http1"] }
+hyper-util = { version = "0.1.21", features = ["client-legacy", "http1", "tokio"] }
+hyper-rustls = { version = "0.27.10", default-features = false, features = ["http1", "native-tokio", "tls12", "aws-lc-rs", "logging"] }

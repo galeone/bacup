@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::config::BackupConfig;
+use crate::ping::{Pinger, Signal};
 use crate::remotes::remote;
 use crate::services::service::Service;
 use crate::services::zfs::retention_sort_key;
@@ -51,6 +52,39 @@ impl fmt::Display for Error {
     }
 }
 
+/// The part of a run that failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Step {
+    Dump,
+    Upload,
+    /// Compression happens inside the remote's upload call, so the two
+    /// can't be told apart.
+    CompressUpload,
+}
+
+impl fmt::Display for Step {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Step::Dump => write!(f, "dump"),
+            Step::Upload => write!(f, "upload"),
+            Step::CompressUpload => write!(f, "compress+upload"),
+        }
+    }
+}
+
+/// Why a run failed.
+#[derive(Debug)]
+pub struct Failure {
+    pub step: Step,
+    pub error: String,
+}
+
+impl fmt::Display for Failure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} failed: {}", self.step, self.error)
+    }
+}
+
 pub struct Backup {
     pub name: String,
     pub what: Box<dyn Service + Send + Sync>,
@@ -60,6 +94,7 @@ pub struct Backup {
     pub compress: bool,
     pub schedule: Schedule,
     pub keep_last: Option<u32>,
+    pub pinger: Option<Pinger>,
 }
 
 impl Backup {
@@ -77,6 +112,11 @@ impl Backup {
             return Err(Error::InvalidCronConfiguration(schedule.err().unwrap()));
         };
 
+        let pinger = match &config.ping_url {
+            Some(url) => Some(Pinger::new(url.clone()).map_err(|e| Error::GeneralError(e.into()))?),
+            None => None,
+        };
+
         Ok(Backup {
             name: String::from(name),
             what: service,
@@ -86,19 +126,20 @@ impl Backup {
             compress: config.compress,
             schedule: schedule.unwrap(),
             keep_last: config.keep_last,
+            pinger,
         })
     }
 
     fn log_result(
-        result: Result<(), remote::Error>,
+        result: &Result<(), remote::Error>,
         name: &str,
         file: &Path,
         remote_name: &str,
         remote_path: &Path,
         compress: bool,
     ) {
-        if result.is_ok() {
-            info!(
+        match result {
+            Ok(()) => info!(
                 "[{}] Successfully uploaded {} {}: {} to [{}] {}",
                 name,
                 if compress { " and compressed" } else { "" },
@@ -106,16 +147,234 @@ impl Backup {
                 file.display(),
                 remote_name,
                 remote_path.display(),
-            );
-        } else {
-            error!(
+            ),
+            Err(error) => error!(
                 "[{}] Error during upload{} of {}: {}. Error: {}",
                 name,
                 if compress { " or compression" } else { "" },
                 file.display(),
                 remote_name,
-                result.err().unwrap()
+                error
+            ),
+        }
+    }
+
+    /// One backup run: dump, upload, prune. Returns the first failure.
+    /// Errors during `keep_last` pruning are logged and don't fail the run.
+    pub async fn run(&self) -> Result<(), Failure> {
+        let remote = &self.r#where;
+        let service = &self.what;
+        let compress = self.compress;
+        let name = self.name.clone();
+        let remote_prefix = self.remote_path.clone();
+        let keep_last = self.keep_last;
+
+        // First call dump, to trigger the dump service if present
+        info!("[{}] Calling dump...", name);
+        let dump = service.dump().await.map_err(|error| Failure {
+            step: Step::Dump,
+            error: error.to_string(),
+        })?;
+
+        let path = dump.path.clone().unwrap_or_default();
+        if path.exists() {
+            // When dump goes out of scope, the dump is removed by Drop.
+            info!("[{}] Dumped {}. Backing it up", name, path.display());
+        }
+
+        // Then loop over all the dumped files and backup them as specified
+        let mut local_files = service.list().await;
+
+        // If the local_files list contains a single file, the upload should be in the form:
+        // /remote/prefix/filename
+        // even if the local file is in /local/path/in/folder/filename
+        let mut single_file = local_files.len() == 1;
+
+        // If the local_files list is a list of multiple files, we suppose these files all
+        // share the same root. To find the root we can simply find the shortest string.
+        // In this way, we can remove the "root prefix" and upload correctly.
+        // From:
+        // - /local/path/in/folder/A
+        // - /local/path/in/folder/B
+        // To
+        // - /remote/prefix/A
+        // - /remote/prefix/B
+        let local_files_clone = local_files.clone();
+        let mut local_prefix = local_files_clone
+            .iter()
+            .min_by(|a, b| a.cmp(b))
+            .unwrap()
+            .as_path();
+
+        // The local_prefix found is:
+        // In case of a folder: the shortest path inside the folder we want to backup.
+        // In case of a file: the file itself.
+
+        // If is a folder, we of course don't want to consider this a prefix, but its parent.
+        if !single_file {
+            local_prefix = local_prefix.parent().unwrap();
+        }
+
+        // If we are going to compress the local_files we need to take care of the content of
+        // the .list()-ed files.
+        // In case of compression of a folder, e.g. if the list_contains glob(/a/folder/**)
+        // we have to pass the the Remote.upload_folder_compressed only /a/folder for creating
+        // a single archive.
+        // Otherwise we'll create a different archive for every file/folder and this is wrong.
+        let all_with_same_prefix = local_files_clone
+            .iter()
+            .all(|path| path.starts_with(local_prefix));
+        if compress && !single_file && all_with_same_prefix {
+            single_file = true;
+            local_files = vec![PathBuf::from(local_prefix)];
+        }
+
+        // The first upload error, if any: the service is told after the
+        // uploads, and the run fails with it.
+        let mut upload_error: Option<String> = None;
+        let mut failed_uploads = 0usize;
+        let mut record = |result: &Result<(), remote::Error>, file: &Path| {
+            if let Err(error) = result {
+                failed_uploads += 1;
+                upload_error.get_or_insert_with(|| format!("{}: {}", file.display(), error));
+            }
+        };
+
+        // Special case in which we want to upload a folder without compression
+        // If all the files share the same prefix, we upload all the files in this prefix.
+        // The remote should handle eventual incremental backup.
+        if !single_file && all_with_same_prefix && !compress {
+            let remote_path = &remote_prefix;
+            info!(
+                "[{}] Uploading a list of files to {}",
+                name,
+                remote_path.display()
             );
+            let result = remote.upload_folder(&local_files, remote_path).await;
+            record(&result, local_prefix);
+            Backup::log_result(
+                &result,
+                &name,
+                local_prefix,
+                &remote.name(),
+                remote_path,
+                compress,
+            );
+            info!("[{}] Uploaded completed.", name);
+            // Set local_files to empty vector for skipping the next loop
+            // and avoid to add another else branch that will increase the
+            // indentation again.
+            local_files = vec![];
+        }
+
+        for file in local_files {
+            let remote_path = if single_file {
+                remote_prefix.join(file.file_name().unwrap())
+            } else {
+                remote_prefix.join(file.strip_prefix(local_prefix).unwrap())
+            };
+
+            let result = if file.is_dir() {
+                // compress for sure, the uncompressed scenarios has been treated
+                // outside this loop
+                info!(
+                    "[{}] Compressing folder {} and uploading to {}",
+                    name,
+                    file.display(),
+                    remote_path.display()
+                );
+                remote.upload_folder_compressed(&file, &remote_path).await
+            } else if compress {
+                info!(
+                    "[{}] Compressing file {} and uploading to {}",
+                    name,
+                    file.display(),
+                    remote_path.display()
+                );
+                remote.upload_file_compressed(&file, &remote_path).await
+            } else {
+                info!(
+                    "[{}] Uploading file {} to {}",
+                    name,
+                    file.display(),
+                    remote_path.display()
+                );
+                remote.upload_file(&file, &remote_path).await
+            };
+
+            record(&result, &file);
+
+            // Handle keep_last. Skipped when the upload failed: the
+            // remote did not get a new backup, so nothing old goes.
+            if let (Some(to_keep), true) = (keep_last, result.is_ok()) {
+                let to_keep = to_keep as usize;
+                match remote.enumerate(remote_path.parent().unwrap()).await {
+                    Ok(list) => {
+                        for delete_me in &to_prune(list, to_keep) {
+                            if let Some(error) =
+                                remote.delete(&PathBuf::from(delete_me)).await.err()
+                            {
+                                error!(
+                                    "[{}] Error during delete of {}: {}",
+                                    name, delete_me, error
+                                );
+                            } else {
+                                info!("[{}] Deleted {}", name, delete_me);
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        error!("Error during remote.enumerate: {}", error)
+                    }
+                }
+            }
+
+            Backup::log_result(
+                &result,
+                &name,
+                &file,
+                &remote.name(),
+                &remote_path,
+                compress,
+            );
+        }
+
+        if let Some(error) = upload_error {
+            service.upload_failed(&dump).await;
+            let error = if failed_uploads > 1 {
+                format!("{failed_uploads} uploads failed, the first: {error}")
+            } else {
+                error
+            };
+            return Err(Failure {
+                step: if compress {
+                    Step::CompressUpload
+                } else {
+                    Step::Upload
+                },
+                error,
+            });
+        }
+        Ok(())
+    }
+
+    /// A scheduled run: pings `start`, runs the backup, pings `success`
+    /// when it worked. Pings never change the outcome.
+    pub async fn run_and_report(&self) {
+        if let Some(pinger) = &self.pinger {
+            pinger.send(Signal::Start, &self.name).await;
+        }
+        match self.run().await {
+            Ok(()) => {
+                info!("[{}] Backup completed", self.name);
+                if let Some(pinger) = &self.pinger {
+                    pinger.send(Signal::Success, &self.name).await;
+                }
+            }
+            Err(failure) => error!("[{}] Backup failed: {}", self.name, failure),
+        }
+        if let Some(next) = self.schedule.upcoming(chrono::Utc).take(1).next() {
+            info!("[{}] Next run: {}", self.name, next);
         }
     }
 
@@ -129,188 +388,7 @@ impl Backup {
                 Job::new_async(schedule.to_string().as_str(), move |_uuid, _js| {
                     let inst = self.clone();
                     Box::pin(async move {
-                        let inst = inst.as_ref();
-                        let remote = &inst.r#where;
-                        let service = &inst.what;
-                        let compress = inst.compress;
-                        let name = inst.name.clone();
-                        let remote_prefix = inst.remote_path.clone();
-                        let keep_last = inst.keep_last;
-
-                        // First call dump, to trigger the dump service if present
-                        info!("[{}] Calling dump...", name);
-                        let dump = match service.dump().await {
-                            Err(error) => {
-                                error!("{}", Error::GeneralError(error));
-                                return;
-                            }
-                            Ok(dump) => dump,
-                        };
-
-                        let path = dump.path.clone().unwrap_or_default();
-                        if path.exists() {
-                            // When dump goes out of scope, the dump is removed by Drop.
-                            info!("[{}] Dumped {}. Backing it up", name, path.display());
-                        }
-
-                        // Then loop over all the dumped files and backup them as specified
-                        let mut local_files = service.list().await;
-
-                        // If the local_files list contains a single file, the upload should be in the form:
-                        // /remote/prefix/filename
-                        // even if the local file is in /local/path/in/folder/filename
-                        let mut single_file = local_files.len() == 1;
-
-                        // If the local_files list is a list of multiple files, we suppose these files all
-                        // share the same root. To find the root we can simply find the shortest string.
-                        // In this way, we can remove the "root prefix" and upload correctly.
-                        // From:
-                        // - /local/path/in/folder/A
-                        // - /local/path/in/folder/B
-                        // To
-                        // - /remote/prefix/A
-                        // - /remote/prefix/B
-                        let local_files_clone = local_files.clone();
-                        let mut local_prefix = local_files_clone
-                            .iter()
-                            .min_by(|a, b| a.cmp(b))
-                            .unwrap()
-                            .as_path();
-
-                        // The local_prefix found is:
-                        // In case of a folder: the shortest path inside the folder we want to backup.
-                        // In case of a file: the file itself.
-
-                        // If is a folder, we of course don't want to consider this a prefix, but its parent.
-                        if !single_file {
-                            local_prefix = local_prefix.parent().unwrap();
-                        }
-
-                        // If we are going to compress the local_files we need to take care of the content of
-                        // the .list()-ed files.
-                        // In case of compression of a folder, e.g. if the list_contains glob(/a/folder/**)
-                        // we have to pass the the Remote.upload_folder_compressed only /a/folder for creating
-                        // a single archive.
-                        // Otherwise we'll create a different archive for every file/folder and this is wrong.
-                        let all_with_same_prefix = local_files_clone
-                            .iter()
-                            .all(|path| path.starts_with(local_prefix));
-                        if compress && !single_file && all_with_same_prefix {
-                            single_file = true;
-                            local_files = vec![PathBuf::from(local_prefix)];
-                        }
-
-                        // Set when any upload fails: the service is told after the uploads.
-                        let mut upload_failed = false;
-
-                        // Special case in which we want to upload a folder without compression
-                        // If all the files share the same prefix, we upload all the files in this prefix.
-                        // The remote should handle eventual incremental backup.
-                        if !single_file && all_with_same_prefix && !compress {
-                            let remote_path = &remote_prefix;
-                            info!(
-                                "[{}] Uploading a list of files to {}",
-                                name,
-                                remote_path.display()
-                            );
-                            let result = remote.upload_folder(&local_files, remote_path).await;
-                            upload_failed |= result.is_err();
-                            Backup::log_result(
-                                result,
-                                &name,
-                                local_prefix,
-                                &remote.name(),
-                                remote_path,
-                                compress,
-                            );
-                            info!("[{}] Uploaded completed.", name);
-                            // Set local_files to empty vector for skipping the next loop
-                            // and avoid to add another else branch that will increase the
-                            // indentation again.
-                            local_files = vec![];
-                        }
-
-                        for file in local_files {
-                            let remote_path = if single_file {
-                                remote_prefix.join(file.file_name().unwrap())
-                            } else {
-                                remote_prefix.join(file.strip_prefix(local_prefix).unwrap())
-                            };
-
-                            let result = if file.is_dir() {
-                                // compress for sure, the uncompressed scenarios has been treated
-                                // outside this loop
-                                info!(
-                                    "[{}] Compressing folder {} and uploading to {}",
-                                    name,
-                                    file.display(),
-                                    remote_path.display()
-                                );
-                                remote.upload_folder_compressed(&file, &remote_path).await
-                            } else if compress {
-                                info!(
-                                    "[{}] Compressing file {} and uploading to {}",
-                                    name,
-                                    file.display(),
-                                    remote_path.display()
-                                );
-                                remote.upload_file_compressed(&file, &remote_path).await
-                            } else {
-                                info!(
-                                    "[{}] Uploading file {} to {}",
-                                    name,
-                                    file.display(),
-                                    remote_path.display()
-                                );
-                                remote.upload_file(&file, &remote_path).await
-                            };
-
-                            upload_failed |= result.is_err();
-
-                            // Handle keep_last. Skipped when the upload failed: the
-                            // remote did not get a new backup, so nothing old goes.
-                            if let (Some(to_keep), true) = (keep_last, result.is_ok()) {
-                                let to_keep = to_keep as usize;
-                                match remote.enumerate(remote_path.parent().unwrap()).await {
-                                    Ok(list) => {
-                                        for delete_me in &to_prune(list, to_keep) {
-                                            if let Some(error) =
-                                                remote.delete(&PathBuf::from(delete_me)).await.err()
-                                            {
-                                                error!(
-                                                    "[{}] Error during delete of {}: {}",
-                                                    name, delete_me, error
-                                                );
-                                            } else {
-                                                info!("[{}] Deleted {}", name, delete_me);
-                                            }
-                                        }
-                                    }
-                                    Err(error) => {
-                                        error!("Error during remote.enumerate: {}", error)
-                                    }
-                                }
-                            }
-
-                            Backup::log_result(
-                                result,
-                                &name,
-                                &file,
-                                &remote.name(),
-                                &remote_path,
-                                compress,
-                            );
-                        }
-
-                        if upload_failed {
-                            service.upload_failed(&dump).await;
-                        }
-
-                        info!(
-                            "[{}] Next run: {}",
-                            name,
-                            inst.schedule.upcoming(chrono::Utc).take(1).next().unwrap()
-                        );
+                        inst.run_and_report().await;
                     })
                 })
                 .unwrap(),
@@ -367,6 +445,163 @@ mod tests {
         let kept: Vec<_> = list.iter().filter(|f| !pruned.contains(f)).collect();
         assert!(kept.contains(&&file("full", 11, 1)));
         assert_eq!(kept.len(), 32);
+    }
+
+    mod runs {
+        use super::super::*;
+        use crate::config::{BackupConfig, LocalhostConfig};
+        use crate::ping::tests::{fast, FakeEndpoint, Reply};
+        use crate::remotes::localhost::Localhost;
+        use crate::services::folders::Folder;
+        use crate::services::service::Dump;
+        use async_trait::async_trait;
+        use tempfile::TempDir;
+        use url::Url;
+
+        #[derive(Clone)]
+        struct FailingDump;
+
+        #[async_trait]
+        impl Service for FailingDump {
+            async fn dump(&self) -> Result<Dump, Box<dyn std::error::Error>> {
+                Err("pg_dump exited with status 1".into())
+            }
+            async fn list(&self) -> Vec<PathBuf> {
+                vec![]
+            }
+        }
+
+        struct Fixture {
+            source: TempDir,
+            remote: TempDir,
+        }
+
+        impl Fixture {
+            fn new() -> Fixture {
+                let source = TempDir::new().unwrap();
+                std::fs::write(source.path().join("data.txt"), "hello").unwrap();
+                Fixture {
+                    source,
+                    remote: TempDir::new().unwrap(),
+                }
+            }
+
+            async fn backup(
+                &self,
+                service: Option<Box<dyn Service + Send + Sync>>,
+                ping_url: Option<Url>,
+            ) -> Backup {
+                let config = BackupConfig {
+                    what: "folders.test".to_string(),
+                    r#where: "localhost.test".to_string(),
+                    when: "daily 01:00".to_string(),
+                    remote_path: "/out/".to_string(),
+                    compress: false,
+                    keep_last: None,
+                    ping_url,
+                };
+                let remote = Localhost::new(
+                    LocalhostConfig {
+                        path: self.remote.path().to_str().unwrap().to_string(),
+                    },
+                    "test",
+                )
+                .unwrap();
+                let service = match service {
+                    Some(service) => service,
+                    None => Box::new(
+                        Folder::new(self.source.path().join("data.txt").to_str().unwrap())
+                            .await
+                            .unwrap(),
+                    ),
+                };
+                let mut backup = Backup::new("test", Box::new(remote), service, &config)
+                    .await
+                    .unwrap();
+                backup.pinger = backup.pinger.map(fast);
+                backup
+            }
+
+            /// Makes every upload fail: the remote root becomes a file, so
+            /// no directory can be created under it (even as root).
+            fn break_remote(&self) {
+                std::fs::remove_dir_all(self.remote.path()).unwrap();
+                std::fs::write(self.remote.path(), "not a directory").unwrap();
+            }
+        }
+
+        fn paths(endpoint: &FakeEndpoint) -> Vec<(String, String)> {
+            endpoint
+                .requests()
+                .into_iter()
+                .map(|r| (r.method, r.path))
+                .collect()
+        }
+
+        fn get(path: &str) -> (String, String) {
+            ("GET".to_string(), path.to_string())
+        }
+
+        #[tokio::test]
+        async fn success_pings_start_then_success() {
+            let endpoint = FakeEndpoint::start(Reply::Status(200)).await;
+            let fixture = Fixture::new();
+            let backup = fixture.backup(None, Some(endpoint.base.clone())).await;
+            backup.run_and_report().await;
+            assert!(fixture.remote.path().join("out").join("data.txt").exists());
+            assert_eq!(
+                paths(&endpoint),
+                vec![get("/ping/abc/start"), get("/ping/abc")]
+            );
+        }
+
+        #[tokio::test]
+        async fn failed_upload_sends_no_success_ping() {
+            let endpoint = FakeEndpoint::start(Reply::Status(200)).await;
+            let fixture = Fixture::new();
+            let backup = fixture.backup(None, Some(endpoint.base.clone())).await;
+            fixture.break_remote();
+
+            let failure = backup.run().await.unwrap_err();
+            assert_eq!(failure.step, Step::Upload);
+            assert!(failure.error.contains("data.txt"), "{}", failure);
+
+            backup.run_and_report().await;
+            assert_eq!(paths(&endpoint), vec![get("/ping/abc/start")]);
+        }
+
+        #[tokio::test]
+        async fn failed_dump_sends_no_success_ping() {
+            let endpoint = FakeEndpoint::start(Reply::Status(200)).await;
+            let fixture = Fixture::new();
+            let backup = fixture
+                .backup(Some(Box::new(FailingDump)), Some(endpoint.base.clone()))
+                .await;
+
+            let failure = backup.run().await.unwrap_err();
+            assert_eq!(failure.step, Step::Dump);
+            assert_eq!(failure.error, "pg_dump exited with status 1");
+
+            backup.run_and_report().await;
+            assert_eq!(paths(&endpoint), vec![get("/ping/abc/start")]);
+        }
+
+        #[tokio::test]
+        async fn a_dead_ping_endpoint_does_not_fail_the_backup() {
+            let endpoint = FakeEndpoint::start(Reply::Status(503)).await;
+            let fixture = Fixture::new();
+            let backup = fixture.backup(None, Some(endpoint.base.clone())).await;
+            backup.run_and_report().await;
+            assert!(fixture.remote.path().join("out").join("data.txt").exists());
+        }
+
+        #[tokio::test]
+        async fn without_ping_url_nothing_is_sent() {
+            let fixture = Fixture::new();
+            let backup = fixture.backup(None, None).await;
+            assert!(backup.pinger.is_none());
+            assert!(backup.run().await.is_ok());
+        }
     }
 
     fn validate_cron_expression(when: &str) {

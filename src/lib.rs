@@ -15,6 +15,7 @@
 pub mod backup;
 pub mod config;
 pub mod disks;
+pub mod ping;
 pub mod remotes;
 pub mod services;
 pub mod when;

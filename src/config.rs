@@ -107,6 +107,11 @@ pub struct BackupConfig {
     pub remote_path: String,
     pub compress: bool,
     pub keep_last: Option<u32>,
+    /// Optional healthchecks.io-style heartbeat URL. bacup sends
+    /// `<ping_url>/start` when a run begins and `<ping_url>` when it
+    /// succeeds. A failed ping never fails the backup.
+    #[serde(default)]
+    pub ping_url: Option<url::Url>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -194,6 +199,30 @@ mod tests {
             .err()
             .expect("unknown key rejected");
         assert!(err.to_string().contains("full_when"), "{}", err);
+    }
+
+    #[test]
+    fn ping_url_is_optional_and_parsed() {
+        let base = r#"
+            [backup.db]
+            what = "postgres.db"
+            where = "aws.bucket"
+            when = "daily 22:00"
+            remote_path = "/db/"
+            compress = true
+        "#;
+        let config: Config = toml::from_str(base).unwrap();
+        assert!(config.backup["db"].ping_url.is_none());
+
+        let with_ping = format!("{base}\nping_url = \"https://hc-ping.com/abc\"\n");
+        let config: Config = toml::from_str(&with_ping).unwrap();
+        assert_eq!(
+            config.backup["db"].ping_url.as_ref().map(|u| u.as_str()),
+            Some("https://hc-ping.com/abc")
+        );
+
+        let bad = format!("{base}\nping_url = \"not a url\"\n");
+        assert!(toml::from_str::<Config>(&bad).is_err());
     }
 
     #[test]

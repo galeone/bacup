@@ -396,6 +396,7 @@ mod tests {
             remote_path: "/backups".to_string(),
             compress: false,
             keep_last,
+            ping_url: None,
         }
     }
 
