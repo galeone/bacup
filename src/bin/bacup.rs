@@ -384,11 +384,10 @@ async fn start(config: Config) -> Result<JobScheduler, String> {
     // scheduler.shutdown_on_ctrl_c();
 
     for (name, job) in backup {
-        let Some(upcoming) = job.schedule.upcoming(chrono::Utc).take(1).next() else {
+        let Some(upcoming) = job.schedule.next() else {
             return Err(format!("Backup {}: no upcoming run in schedule", name));
         };
-        let schedule = job.schedule.clone();
-        let res = job.schedule(&mut scheduler, schedule).await;
+        let res = job.schedule(&mut scheduler).await;
 
         match res {
             Err(error) => {

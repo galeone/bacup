@@ -13,6 +13,8 @@
 // limitations under the License.
 
 use chrono::Weekday;
+use croner::parser::{CronParser, Seconds};
+use croner::Cron;
 use regex::Regex;
 
 fn get_hours_and_minutes(when: &str) -> Option<(i8, i8)> {
@@ -96,10 +98,8 @@ pub fn parse_weekly(input: &str) -> Result<String, String> {
                     input
                 ));
             }
-            // Use the day name, not a number: the `cron` crate (which computes
-            // the next run) numbers days 1=Sunday..7=Saturday and rejects 0,
-            // while `croner` (which runs the job) uses 0/7=Sunday..6=Saturday.
-            // Both read MON..SUN the same way.
+            // Use the day name, not a number: it can't be misread whatever
+            // the numbering convention.
             let day = day.0.to_uppercase();
 
             // sec   min   hour   day of month   month   day of week
@@ -147,9 +147,54 @@ pub fn parse_monthly(input: &str) -> Result<String, String> {
     Err(String::from("Unable to find monthly identifier"))
 }
 
+/// The schedule a backup runs on: the cron expression handed to the
+/// scheduler, and the same expression parsed exactly as the scheduler
+/// parses it, used for validation and to compute the next run.
+#[derive(Debug, Clone)]
+pub struct Schedule {
+    pub expression: String,
+    pub cron: Cron,
+}
+
+impl Schedule {
+    /// Parses a `when` field: one of the human friendly formats of
+    /// [parse_when], or a raw cron expression with a seconds field
+    /// (`sec min hour dom month dow`, Sunday is 0 or 7).
+    pub fn parse(when: &str) -> Result<Schedule, String> {
+        let expression = parse_when(when).unwrap_or_else(|_| when.trim().to_string());
+        // The parser configuration of tokio-cron-scheduler, which runs the
+        // jobs, so that the logged next run is the run that happens.
+        let cron = CronParser::builder()
+            .seconds(Seconds::Required)
+            .dom_and_dow(true)
+            .build()
+            .parse(&expression)
+            .map_err(|e| {
+                format!(
+                    "invalid when \"{}\": not daily/weekly/monthly, nor a cron \
+                    expression with seconds (sec min hour dom month dow): {}",
+                    when, e
+                )
+            })?;
+        Ok(Schedule { expression, cron })
+    }
+
+    /// The first run strictly after `after`.
+    pub fn next_after(
+        &self,
+        after: &chrono::DateTime<chrono::Utc>,
+    ) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.cron.find_next_occurrence(after, false).ok()
+    }
+
+    /// The next run from now.
+    pub fn next(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.next_after(&chrono::Utc::now())
+    }
+}
+
 /// Parse a human friendly `when` expression into a cron expression
-/// (sec min hour dom month dow), accepted by both the `cron` and `croner`
-/// crates.
+/// (sec min hour dom month dow).
 ///
 /// Accepted formats:
 /// - `daily HH:MM` (e.g. `daily 03:00`)
@@ -188,18 +233,11 @@ pub fn parse_when(when: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use croner::Cron;
-    use std::str::FromStr;
 
     fn validate_cron_expression(when: &str) {
-        let cron_str =
-            parse_when(when).unwrap_or_else(|e| panic!("Unable to parse when: {}: {}", when, e));
-        Cron::from_str(&cron_str).unwrap_or_else(|e| {
-            panic!(
-                "Invalid cron expression generated: {} -> {}: {}",
-                when, cron_str, e
-            )
-        });
+        parse_when(when).unwrap_or_else(|e| panic!("Unable to parse when: {}: {}", when, e));
+        // Parsed with the same configuration as tokio-cron-scheduler.
+        Schedule::parse(when).unwrap_or_else(|e| panic!("{}", e));
     }
 
     #[test]
@@ -250,28 +288,55 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_weekly_runs_on_the_same_day_in_cron_and_croner() {
+    fn next_weekday(when: &str) -> Weekday {
         use chrono::Datelike;
+        // Sunday 2026-11-22 11:00 UTC
         let from = chrono::DateTime::parse_from_rfc3339("2026-11-22T11:00:00Z")
             .unwrap()
             .with_timezone(&chrono::Utc);
-        for (day, expected) in [
-            ("weekly monday 10:00", Weekday::Mon),
-            ("weekly saturday 10:00", Weekday::Sat),
-            ("weekly sunday 10:00", Weekday::Sun),
-        ] {
-            let expr = parse_when(day).unwrap();
-            let schedule = cron::Schedule::from_str(&expr)
-                .unwrap_or_else(|e| panic!("cron rejects {}: {}", expr, e));
-            let next = schedule.after(&from).next().unwrap();
-            assert_eq!(next.weekday(), expected, "cron, {}", day);
-            let next = Cron::from_str(&expr)
-                .unwrap()
-                .find_next_occurrence(&from, false)
-                .unwrap();
-            assert_eq!(next.weekday(), expected, "croner, {}", day);
-        }
+        Schedule::parse(when)
+            .unwrap_or_else(|e| panic!("{}", e))
+            .next_after(&from)
+            .unwrap()
+            .weekday()
+    }
+
+    #[test]
+    fn test_weekly_next_run_weekday() {
+        assert_eq!(next_weekday("weekly monday 10:00"), Weekday::Mon);
+        assert_eq!(next_weekday("weekly saturday 10:00"), Weekday::Sat);
+        assert_eq!(next_weekday("weekly sunday 10:00"), Weekday::Sun);
+    }
+
+    #[test]
+    fn test_raw_cron_weekdays_use_the_scheduler_convention() {
+        // Standard cron numbering, as tokio-cron-scheduler (croner) runs it:
+        // 0 and 7 are Sunday, 1 is Monday, 6 is Saturday.
+        assert_eq!(next_weekday("0 0 10 * * 0"), Weekday::Sun);
+        assert_eq!(next_weekday("0 0 10 * * 7"), Weekday::Sun);
+        assert_eq!(next_weekday("0 0 10 * * 1"), Weekday::Mon);
+        assert_eq!(next_weekday("0 0 10 * * 6"), Weekday::Sat);
+        assert_eq!(next_weekday("0 0 10 * * SUN"), Weekday::Sun);
+    }
+
+    #[test]
+    fn test_raw_cron_needs_seconds() {
+        assert!(Schedule::parse("0 5 0 * 8 *").is_ok());
+        let err = Schedule::parse("5 0 * 8 *").unwrap_err();
+        assert!(err.contains("with seconds"), "{}", err);
+        assert!(Schedule::parse("every day").is_err());
+    }
+
+    #[test]
+    fn test_schedule_expression_is_what_the_scheduler_gets() {
+        assert_eq!(
+            Schedule::parse("weekly sunday 10:00").unwrap().expression,
+            "0 0 10 * * SUN"
+        );
+        assert_eq!(
+            Schedule::parse(" 0 5 0 * 8 * ").unwrap().expression,
+            "0 5 0 * 8 *"
+        );
     }
 
     #[test]

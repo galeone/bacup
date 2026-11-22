@@ -21,7 +21,7 @@ When configuring the backups, the field **when** accepts configuration strings i
 - `"daily $hh:$mm` e.g. `daily 15:30`
 - `weekly $day $hh:$mm` e.g. `weekly mon 12:23` or `weekly monday 12:23`. `weekly` can be omitted.
 - `monthly $day $hh:$mm` e.g. `monthly 1 00:30`
-- **cron**. If you really have to use it, use [crontab guru](https://crontab.guru/) to create the cron string.
+- **cron**, with a seconds field: `$sec $min $hour $day_of_month $month $day_of_week`, e.g. `0 5 0 * 8 *` (00:05 every day in August). Day of week: `0` or `7` is Sunday, `1` Monday, ..., `6` Saturday, or `SUN`..`SAT`. Tools like [crontab guru](https://crontab.guru/) produce the usual five fields: put `0 ` in front for the seconds. A five-field string is rejected at startup.
 
 **NOTE**: The time is ALWAYS in UTC timezone.
 
@@ -134,11 +134,11 @@ When configuring the backups, the field **when** accepts configuration strings i
 
     # Incrementally sync folders.service1 with the remote host
     # using rsync (authenticated trough ssh)
-    # At 00:05 in August
+    # At 00:05 every day in August (sec min hour day-of-month month day-of-week)
     [backup.service1_source]
     what = "folders.service1"
     where = "ssh.remote_host1"
-    when = "5 0 * 8 *"
+    when = "0 5 0 * 8 *"
     remote_path = "~/backups/service1_incremental/"
     compress = false # no compression = incremental sync
 
@@ -231,7 +231,7 @@ ping_url = "https://hc-ping.com/your-check-uuid"
   | `panic` | the run crashed; the error is the panic message |
   | `startup` | bacup could not start (a remote or service failed to initialize); sent to every backup with a `ping_url`, then bacup exits |
 
-  healthchecks.io stores the report with the ping: open the check and look at its Events. AWS access key IDs in the report are masked (`AKIA...WXYZ`), and the report is cut at 10 kB.
+  healthchecks.io includes the report in the alert email, as "Last Ping Body", and keeps it in the check's Events. AWS access key IDs in the report are masked (`AKIA...WXYZ`), and the report is cut at 10 kB.
 
 The monitoring service also alerts you when a success ping doesn't arrive in time. This is a dead man's switch: it covers the failures bacup can't report itself, such as the process being dead, the server down, or a config file that doesn't parse.
 

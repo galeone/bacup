@@ -20,12 +20,10 @@ use crate::services::service::Service;
 use crate::services::zfs::retention_sort_key;
 use crate::when;
 
-use cron::Schedule;
 use std::collections::HashMap;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 use std::sync::Arc;
 use tokio_cron_scheduler::JobSchedulerError;
 use tokio_cron_scheduler::{Job, JobScheduler};
@@ -36,7 +34,7 @@ use uuid::Uuid;
 
 #[derive(Debug)]
 pub enum Error {
-    InvalidCronConfiguration(cron::error::Error),
+    InvalidCronConfiguration(String),
     RuntimeError(io::Error),
     InvalidWhenConfiguration(String),
     GeneralError(Box<dyn std::error::Error>),
@@ -46,7 +44,7 @@ impl std::error::Error for Error {}
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::InvalidCronConfiguration(error) => write!(f, "Invalid cron string: {}", error),
+            Error::InvalidCronConfiguration(error) => write!(f, "{}", error),
             Error::RuntimeError(error) => write!(f, "Runtime error: {}", error),
             Error::InvalidWhenConfiguration(msg) => write!(f, "Invalid when string: {}", msg),
             Error::GeneralError(error) => write!(f, "{}", error),
@@ -190,7 +188,7 @@ pub struct Backup {
     pub remote_path: PathBuf,
     pub when: String,
     pub compress: bool,
-    pub schedule: Schedule,
+    pub schedule: when::Schedule,
     pub keep_last: Option<u32>,
     pub pinger: Option<Pinger>,
 }
@@ -202,13 +200,8 @@ impl Backup {
         service: Box<dyn Service + Send + Sync>,
         config: &BackupConfig,
     ) -> Result<Backup, Error> {
-        let parsable = when::parse_when(&config.when).ok();
-        let to_parse: &str = parsable.as_deref().unwrap_or(&config.when);
-
-        let schedule = cron::Schedule::from_str(to_parse);
-        if schedule.is_err() {
-            return Err(Error::InvalidCronConfiguration(schedule.err().unwrap()));
-        };
+        let schedule =
+            when::Schedule::parse(&config.when).map_err(Error::InvalidCronConfiguration)?;
 
         let pinger = match &config.ping_url {
             Some(url) => Some(Pinger::new(url.clone()).map_err(|e| Error::GeneralError(e.into()))?),
@@ -224,7 +217,7 @@ impl Backup {
             remote_path: PathBuf::from(config.remote_path.clone()),
             when: config.when.clone(),
             compress: config.compress,
-            schedule: schedule.unwrap(),
+            schedule,
             keep_last: config.keep_last,
             pinger,
         })
@@ -523,7 +516,7 @@ impl Backup {
                 }
             }
         }
-        if let Some(next) = self.schedule.upcoming(chrono::Utc).take(1).next() {
+        if let Some(next) = self.schedule.next() {
             info!("[{}] Next run: {}", self.name, next);
         }
     }
@@ -531,11 +524,11 @@ impl Backup {
     pub async fn schedule(
         self: Arc<Self>,
         scheduler: &mut JobScheduler,
-        schedule: cron::Schedule,
     ) -> Result<Uuid, JobSchedulerError> {
+        let expression = self.schedule.expression.clone();
         scheduler
             .add(
-                Job::new_async(schedule.to_string().as_str(), move |_uuid, _js| {
+                Job::new_async(expression.as_str(), move |_uuid, _js| {
                     let inst = self.clone();
                     Box::pin(async move {
                         inst.run_and_report().await;
@@ -562,7 +555,6 @@ fn to_prune(mut list: Vec<String>, to_keep: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use croner::Cron;
 
     #[test]
     fn to_prune_keeps_the_newest_by_name() {
@@ -985,14 +977,10 @@ mod tests {
             when,
             result.err().unwrap()
         );
-        let cron_str = result.unwrap();
-        // Same configuration of tokio-cron-scheduler
-        assert!(
-            Cron::from_str(&cron_str).is_ok(),
-            "Invalid croner expression '{}' for when string '{}'",
-            cron_str,
-            when
-        );
+        // Parsed with the same configuration as tokio-cron-scheduler.
+        if let Err(e) = when::Schedule::parse(when) {
+            panic!("Invalid schedule for when string '{}': {}", when, e);
+        }
     }
 
     #[test]
