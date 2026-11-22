@@ -20,6 +20,7 @@ use crate::services::zfs::retention_sort_key;
 use crate::when;
 
 use cron::Schedule;
+use std::collections::HashMap;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -55,19 +56,32 @@ impl fmt::Display for Error {
 /// The part of a run that failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Step {
+    /// bacup could not start (a remote or service failed to initialize).
+    Startup,
     Dump,
+    /// The service produced nothing to back up.
+    List,
     Upload,
     /// Compression happens inside the remote's upload call, so the two
     /// can't be told apart.
     CompressUpload,
+    /// Deleting old backups for `keep_last` failed (the new backup was
+    /// uploaded).
+    Prune,
+    /// The run panicked.
+    Panic,
 }
 
 impl fmt::Display for Step {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Step::Startup => write!(f, "startup"),
             Step::Dump => write!(f, "dump"),
+            Step::List => write!(f, "list"),
             Step::Upload => write!(f, "upload"),
             Step::CompressUpload => write!(f, "compress+upload"),
+            Step::Prune => write!(f, "prune"),
+            Step::Panic => write!(f, "panic"),
         }
     }
 }
@@ -85,8 +99,88 @@ impl fmt::Display for Failure {
     }
 }
 
+impl Failure {
+    /// The plain-text report sent with the `/fail` ping. `what` and
+    /// `where` are the config keys (e.g. `folders.home`, `aws.bucket`).
+    pub fn report(&self, backup: &str, what: &str, r#where: &str) -> String {
+        format!(
+            "bacup backup \"{backup}\" failed\n\
+             backup: {backup} ({what} -> {where})\n\
+             step: {step}\n\
+             error: {error}\n\
+             host: {host}\n\
+             version: bacup {version}\n",
+            step = self.step,
+            error = self.error,
+            host = sysinfo::System::host_name().unwrap_or_else(|| "unknown".to_string()),
+            version = env!("CARGO_PKG_VERSION"),
+        )
+    }
+}
+
+/// A backup to notify when bacup itself fails to start.
+pub struct StartupTarget {
+    pub name: String,
+    pub what: String,
+    pub r#where: String,
+    pub pinger: Pinger,
+}
+
+impl StartupTarget {
+    /// Every backup with a usable `ping_url`, sorted by name.
+    pub fn from_config(backups: &HashMap<String, BackupConfig>) -> Vec<StartupTarget> {
+        let mut targets: Vec<StartupTarget> = backups
+            .iter()
+            .filter_map(|(name, config)| {
+                let url = config.ping_url.clone()?;
+                match Pinger::new(url) {
+                    Ok(pinger) => Some(StartupTarget {
+                        name: name.clone(),
+                        what: config.what.clone(),
+                        r#where: config.r#where.clone(),
+                        pinger,
+                    }),
+                    Err(error) => {
+                        error!("[{}] {}", name, error);
+                        None
+                    }
+                }
+            })
+            .collect();
+        targets.sort_by(|a, b| a.name.cmp(&b.name));
+        targets
+    }
+}
+
+/// Sends a `startup` failure to every target, concurrently.
+pub async fn report_startup_failure(targets: &[StartupTarget], error: &str) {
+    let failure = Failure {
+        step: Step::Startup,
+        error: error.to_string(),
+    };
+    futures::future::join_all(targets.iter().map(|target| {
+        let report = failure.report(&target.name, &target.what, &target.r#where);
+        target.pinger.send(Signal::Fail(report), &target.name)
+    }))
+    .await;
+}
+
+/// A panic payload as text.
+fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        message.to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "unknown panic payload".to_string()
+    }
+}
+
 pub struct Backup {
     pub name: String,
+    /// The `what` and `where` config keys, for failure reports.
+    pub what_key: String,
+    pub where_key: String,
     pub what: Box<dyn Service + Send + Sync>,
     pub r#where: Box<dyn remote::Remote + Send + Sync>,
     pub remote_path: PathBuf,
@@ -119,6 +213,8 @@ impl Backup {
 
         Ok(Backup {
             name: String::from(name),
+            what_key: config.what.clone(),
+            where_key: config.r#where.clone(),
             what: service,
             r#where: remote,
             remote_path: PathBuf::from(config.remote_path.clone()),
@@ -159,8 +255,8 @@ impl Backup {
         }
     }
 
-    /// One backup run: dump, upload, prune. Returns the first failure.
-    /// Errors during `keep_last` pruning are logged and don't fail the run.
+    /// One backup run: dump, upload, prune. Returns the first failure; an
+    /// upload failure wins over a prune failure.
     pub async fn run(&self) -> Result<(), Failure> {
         let remote = &self.r#where;
         let service = &self.what;
@@ -184,6 +280,12 @@ impl Backup {
 
         // Then loop over all the dumped files and backup them as specified
         let mut local_files = service.list().await;
+        if local_files.is_empty() {
+            return Err(Failure {
+                step: Step::List,
+                error: "nothing to back up: the service listed no files".to_string(),
+            });
+        }
 
         // If the local_files list contains a single file, the upload should be in the form:
         // /remote/prefix/filename
@@ -232,6 +334,8 @@ impl Backup {
         // The first upload error, if any: the service is told after the
         // uploads, and the run fails with it.
         let mut upload_error: Option<String> = None;
+        // The first keep_last pruning error, if any.
+        let mut prune_error: Option<String> = None;
         let mut failed_uploads = 0usize;
         let mut record = |result: &Result<(), remote::Error>, file: &Path| {
             if let Err(error) = result {
@@ -318,13 +422,23 @@ impl Backup {
                                     "[{}] Error during delete of {}: {}",
                                     name, delete_me, error
                                 );
+                                prune_error.get_or_insert_with(|| {
+                                    format!("delete of {} failed: {}", delete_me, error)
+                                });
                             } else {
                                 info!("[{}] Deleted {}", name, delete_me);
                             }
                         }
                     }
                     Err(error) => {
-                        error!("Error during remote.enumerate: {}", error)
+                        error!("[{}] Error during remote.enumerate: {}", name, error);
+                        prune_error.get_or_insert_with(|| {
+                            format!(
+                                "listing {} failed: {}",
+                                remote_path.parent().unwrap().display(),
+                                error
+                            )
+                        });
                     }
                 }
             }
@@ -355,23 +469,52 @@ impl Backup {
                 error,
             });
         }
+        if let Some(error) = prune_error {
+            return Err(Failure {
+                step: Step::Prune,
+                error,
+            });
+        }
         Ok(())
     }
 
-    /// A scheduled run: pings `start`, runs the backup, pings `success`
-    /// when it worked. Pings never change the outcome.
+    /// [Backup::run], with a panic turned into a [Step::Panic] failure.
+    /// The panic is still printed to the log by the default panic hook.
+    pub async fn run_catching_panics(&self) -> Result<(), Failure> {
+        use futures::FutureExt;
+        match std::panic::AssertUnwindSafe(self.run())
+            .catch_unwind()
+            .await
+        {
+            Ok(result) => result,
+            Err(payload) => Err(Failure {
+                step: Step::Panic,
+                error: panic_message(payload),
+            }),
+        }
+    }
+
+    /// A scheduled run: pings `start`, runs the backup, then pings
+    /// `success`, or `fail` with a report of the failed step. Pings never
+    /// change the outcome.
     pub async fn run_and_report(&self) {
         if let Some(pinger) = &self.pinger {
             pinger.send(Signal::Start, &self.name).await;
         }
-        match self.run().await {
+        match self.run_catching_panics().await {
             Ok(()) => {
                 info!("[{}] Backup completed", self.name);
                 if let Some(pinger) = &self.pinger {
                     pinger.send(Signal::Success, &self.name).await;
                 }
             }
-            Err(failure) => error!("[{}] Backup failed: {}", self.name, failure),
+            Err(failure) => {
+                error!("[{}] Backup failed: {}", self.name, failure);
+                if let Some(pinger) = &self.pinger {
+                    let report = failure.report(&self.name, &self.what_key, &self.where_key);
+                    pinger.send(Signal::Fail(report), &self.name).await;
+                }
+            }
         }
         if let Some(next) = self.schedule.upcoming(chrono::Utc).take(1).next() {
             info!("[{}] Next run: {}", self.name, next);
@@ -450,7 +593,7 @@ mod tests {
     mod runs {
         use super::super::*;
         use crate::config::{BackupConfig, LocalhostConfig};
-        use crate::ping::tests::{fast, FakeEndpoint, Reply};
+        use crate::ping::tests::{fast, FakeEndpoint, Received, Reply};
         use crate::remotes::localhost::Localhost;
         use crate::services::folders::Folder;
         use crate::services::service::Dump;
@@ -468,6 +611,58 @@ mod tests {
             }
             async fn list(&self) -> Vec<PathBuf> {
                 vec![]
+            }
+        }
+
+        #[derive(Clone)]
+        struct PanickingDump;
+
+        #[async_trait]
+        impl Service for PanickingDump {
+            async fn dump(&self) -> Result<Dump, Box<dyn std::error::Error>> {
+                panic!("index out of bounds");
+            }
+            async fn list(&self) -> Vec<PathBuf> {
+                vec![]
+            }
+        }
+
+        /// Localhost, except that listing the remote (for keep_last) fails.
+        #[derive(Clone)]
+        struct BrokenListing(Localhost);
+
+        #[async_trait]
+        impl remote::Remote for BrokenListing {
+            async fn upload_file(&self, p: &Path, r: &Path) -> Result<(), remote::Error> {
+                self.0.upload_file(p, r).await
+            }
+            async fn upload_folder(&self, p: &[PathBuf], r: &Path) -> Result<(), remote::Error> {
+                self.0.upload_folder(p, r).await
+            }
+            async fn upload_file_compressed(
+                &self,
+                p: &Path,
+                r: &Path,
+            ) -> Result<(), remote::Error> {
+                self.0.upload_file_compressed(p, r).await
+            }
+            async fn upload_folder_compressed(
+                &self,
+                p: &Path,
+                r: &Path,
+            ) -> Result<(), remote::Error> {
+                self.0.upload_folder_compressed(p, r).await
+            }
+            async fn enumerate(&self, _: &Path) -> Result<Vec<String>, remote::Error> {
+                Err(remote::Error::LocalError(std::io::Error::other(
+                    "InvalidAccessKeyId",
+                )))
+            }
+            async fn delete(&self, r: &Path) -> Result<(), remote::Error> {
+                self.0.delete(r).await
+            }
+            fn name(&self) -> String {
+                self.0.name()
             }
         }
 
@@ -491,22 +686,36 @@ mod tests {
                 service: Option<Box<dyn Service + Send + Sync>>,
                 ping_url: Option<Url>,
             ) -> Backup {
+                self.backup_with(service, ping_url, None, None).await
+            }
+
+            fn localhost(&self) -> Localhost {
+                Localhost::new(
+                    LocalhostConfig {
+                        path: self.remote.path().to_str().unwrap().to_string(),
+                    },
+                    "test",
+                )
+                .unwrap()
+            }
+
+            async fn backup_with(
+                &self,
+                service: Option<Box<dyn Service + Send + Sync>>,
+                ping_url: Option<Url>,
+                remote: Option<Box<dyn remote::Remote + Send + Sync>>,
+                keep_last: Option<u32>,
+            ) -> Backup {
                 let config = BackupConfig {
                     what: "folders.test".to_string(),
                     r#where: "localhost.test".to_string(),
                     when: "daily 01:00".to_string(),
                     remote_path: "/out/".to_string(),
                     compress: false,
-                    keep_last: None,
+                    keep_last,
                     ping_url,
                 };
-                let remote = Localhost::new(
-                    LocalhostConfig {
-                        path: self.remote.path().to_str().unwrap().to_string(),
-                    },
-                    "test",
-                )
-                .unwrap();
+                let remote = remote.unwrap_or_else(|| Box::new(self.localhost()));
                 let service = match service {
                     Some(service) => service,
                     None => Box::new(
@@ -515,9 +724,7 @@ mod tests {
                             .unwrap(),
                     ),
                 };
-                let mut backup = Backup::new("test", Box::new(remote), service, &config)
-                    .await
-                    .unwrap();
+                let mut backup = Backup::new("test", remote, service, &config).await.unwrap();
                 backup.pinger = backup.pinger.map(fast);
                 backup
             }
@@ -542,6 +749,28 @@ mod tests {
             ("GET".to_string(), path.to_string())
         }
 
+        /// Checks that the endpoint got `start` then a `fail` whose report
+        /// names the backup and `step`, and returns the report.
+        fn assert_failed(endpoint: &FakeEndpoint, step: &str) -> String {
+            let requests = endpoint.requests();
+            assert_eq!(
+                paths(endpoint),
+                vec![
+                    get("/ping/abc/start"),
+                    ("POST".to_string(), "/ping/abc/fail".to_string())
+                ]
+            );
+            let Received { body, .. } = requests[1].clone();
+            assert!(
+                body.contains("backup: test (folders.test -> localhost.test)"),
+                "{}",
+                body
+            );
+            assert!(body.contains(&format!("step: {step}\n")), "{}", body);
+            assert!(body.contains("host: "), "{}", body);
+            body
+        }
+
         #[tokio::test]
         async fn success_pings_start_then_success() {
             let endpoint = FakeEndpoint::start(Reply::Status(200)).await;
@@ -556,7 +785,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn failed_upload_sends_no_success_ping() {
+        async fn failed_upload_pings_fail_with_the_report() {
             let endpoint = FakeEndpoint::start(Reply::Status(200)).await;
             let fixture = Fixture::new();
             let backup = fixture.backup(None, Some(endpoint.base.clone())).await;
@@ -567,11 +796,12 @@ mod tests {
             assert!(failure.error.contains("data.txt"), "{}", failure);
 
             backup.run_and_report().await;
-            assert_eq!(paths(&endpoint), vec![get("/ping/abc/start")]);
+            let body = assert_failed(&endpoint, "upload");
+            assert!(body.contains("data.txt"), "{}", body);
         }
 
         #[tokio::test]
-        async fn failed_dump_sends_no_success_ping() {
+        async fn failed_dump_pings_fail_with_the_report() {
             let endpoint = FakeEndpoint::start(Reply::Status(200)).await;
             let fixture = Fixture::new();
             let backup = fixture
@@ -583,7 +813,118 @@ mod tests {
             assert_eq!(failure.error, "pg_dump exited with status 1");
 
             backup.run_and_report().await;
-            assert_eq!(paths(&endpoint), vec![get("/ping/abc/start")]);
+            let body = assert_failed(&endpoint, "dump");
+            assert!(
+                body.contains("error: pg_dump exited with status 1"),
+                "{}",
+                body
+            );
+        }
+
+        #[tokio::test]
+        async fn a_panic_is_reported_as_a_failure() {
+            let endpoint = FakeEndpoint::start(Reply::Status(200)).await;
+            let fixture = Fixture::new();
+            let backup = fixture
+                .backup(Some(Box::new(PanickingDump)), Some(endpoint.base.clone()))
+                .await;
+            backup.run_and_report().await;
+            let body = assert_failed(&endpoint, "panic");
+            assert!(body.contains("index out of bounds"), "{}", body);
+        }
+
+        #[tokio::test]
+        async fn an_empty_source_fails_instead_of_panicking() {
+            let endpoint = FakeEndpoint::start(Reply::Status(200)).await;
+            let fixture = Fixture::new();
+            let empty = TempDir::new().unwrap();
+            let folder = Folder::new(empty.path().join("*").to_str().unwrap())
+                .await
+                .unwrap();
+            let backup = fixture
+                .backup(Some(Box::new(folder)), Some(endpoint.base.clone()))
+                .await;
+            backup.run_and_report().await;
+            assert_failed(&endpoint, "list");
+        }
+
+        #[tokio::test]
+        async fn a_prune_error_fails_the_run_after_the_upload() {
+            let endpoint = FakeEndpoint::start(Reply::Status(200)).await;
+            let fixture = Fixture::new();
+            let remote = Box::new(BrokenListing(fixture.localhost()));
+            let backup = fixture
+                .backup_with(None, Some(endpoint.base.clone()), Some(remote), Some(3))
+                .await;
+            backup.run_and_report().await;
+            // The new backup is on the remote; only the pruning failed.
+            assert!(fixture.remote.path().join("out").join("data.txt").exists());
+            let body = assert_failed(&endpoint, "prune");
+            assert!(body.contains("InvalidAccessKeyId"), "{}", body);
+        }
+
+        #[tokio::test]
+        async fn startup_failure_reaches_every_ping_url() {
+            let first = FakeEndpoint::start(Reply::Status(200)).await;
+            let second = FakeEndpoint::start(Reply::Status(200)).await;
+            let config = |what: &str, ping_url: Option<Url>| BackupConfig {
+                what: what.to_string(),
+                r#where: "aws.backups".to_string(),
+                when: "daily 01:00".to_string(),
+                remote_path: "/".to_string(),
+                compress: true,
+                keep_last: None,
+                ping_url,
+            };
+            let mut backups = HashMap::new();
+            backups.insert(
+                "a".to_string(),
+                config("postgres.a", Some(first.base.clone())),
+            );
+            backups.insert(
+                "b".to_string(),
+                config("folders.b", Some(second.base.clone())),
+            );
+            backups.insert("c".to_string(), config("folders.c", None));
+
+            let mut targets = StartupTarget::from_config(&backups);
+            assert_eq!(targets.len(), 2);
+            for target in &mut targets {
+                target.pinger = fast(target.pinger.clone());
+            }
+            report_startup_failure(
+                &targets,
+                "Failed to configure remote aws.backups: InvalidAccessKeyId",
+            )
+            .await;
+
+            for (endpoint, line) in [
+                (&first, "backup: a (postgres.a -> aws.backups)"),
+                (&second, "backup: b (folders.b -> aws.backups)"),
+            ] {
+                let requests = endpoint.requests();
+                assert_eq!(requests.len(), 1);
+                assert_eq!(requests[0].path, "/ping/abc/fail");
+                let body = &requests[0].body;
+                assert!(body.contains(line), "{}", body);
+                assert!(body.contains("step: startup\n"), "{}", body);
+                assert!(body.contains("InvalidAccessKeyId"), "{}", body);
+            }
+        }
+
+        #[test]
+        fn report_lists_backup_step_and_error() {
+            let failure = Failure {
+                step: Step::CompressUpload,
+                error: "Remote error: InvalidAccessKeyId".to_string(),
+            };
+            let report = failure.report("blog", "postgres.blog", "aws.backups");
+            let lines: Vec<_> = report.lines().collect();
+            assert_eq!(lines[0], "bacup backup \"blog\" failed");
+            assert_eq!(lines[1], "backup: blog (postgres.blog -> aws.backups)");
+            assert_eq!(lines[2], "step: compress+upload");
+            assert_eq!(lines[3], "error: Remote error: InvalidAccessKeyId");
+            assert!(lines[4].starts_with("host: "));
         }
 
         #[tokio::test]

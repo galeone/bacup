@@ -18,6 +18,7 @@
 //! and `<ping_url>` when it succeeds. The monitoring service alerts when the
 //! success ping is late, so it also catches the cases where bacup can't say
 //! anything itself (process dead, server down, config not loading).
+//! A failed run sends `POST <ping_url>/fail` with a plain-text report.
 //!
 //! A ping never fails a backup: errors are logged and the run goes on.
 
@@ -35,12 +36,15 @@ use log::{debug, warn};
 use url::Url;
 
 /// What a ping tells the monitoring service.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Signal {
     /// The run has started: `GET <ping_url>/start`.
     Start,
     /// The run succeeded: `GET <ping_url>`.
     Success,
+    /// The run failed: `POST <ping_url>/fail` with this report as a
+    /// plain-text body (redacted and truncated, see [fail_body]).
+    Fail(String),
 }
 
 impl fmt::Display for Signal {
@@ -48,8 +52,31 @@ impl fmt::Display for Signal {
         match self {
             Signal::Start => write!(f, "start"),
             Signal::Success => write!(f, "success"),
+            Signal::Fail(_) => write!(f, "fail"),
         }
     }
+}
+
+/// Bodies above this are cut: healthchecks.io stores up to 100 kB, but a
+/// report should stay readable in an alert.
+pub const MAX_BODY: usize = 10_000;
+
+/// The body sent with [Signal::Fail]: AWS access key IDs are masked
+/// (`AKIA...WXYZ`), since the report leaves the machine, and the text is
+/// cut at [MAX_BODY] bytes on a character boundary.
+pub fn fail_body(report: &str) -> String {
+    let access_key = regex::Regex::new(r"\b(AKIA|ASIA)[A-Z0-9]{12,}([A-Z0-9]{4})\b").unwrap();
+    let mut body = access_key.replace_all(report, "$1...$2").into_owned();
+    if body.len() > MAX_BODY {
+        const MARK: &str = "\n[truncated]";
+        let mut cut = MAX_BODY - MARK.len();
+        while !body.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        body.truncate(cut);
+        body.push_str(MARK);
+    }
+    body
 }
 
 /// Whether a ping reached the monitoring service. Callers only log it.
@@ -118,11 +145,12 @@ impl Pinger {
 
     /// The URL a signal is sent to. Suffixes are appended as path segments,
     /// so a trailing slash or a query string (e.g. `?rid=...`) is preserved.
-    pub fn target(&self, signal: Signal) -> Url {
+    pub fn target(&self, signal: &Signal) -> Url {
         let mut url = self.url.clone();
         let suffix = match signal {
             Signal::Start => Some("start"),
             Signal::Success => None,
+            Signal::Fail(_) => Some("fail"),
         };
         if let Some(suffix) = suffix {
             // Checked in new(): the URL can be a base, so this is Ok.
@@ -136,7 +164,11 @@ impl Pinger {
     /// Sends `signal`, retrying transient failures. Never panics or errors:
     /// the outcome is logged and returned for tests.
     pub async fn send(&self, signal: Signal, backup: &str) -> Outcome {
-        let url = self.target(signal);
+        let url = self.target(&signal);
+        let body = match &signal {
+            Signal::Fail(report) => Some(Bytes::from(fail_body(report))),
+            _ => None,
+        };
         let mut wait = self.backoff;
         let mut last_error = String::new();
         for attempt in 1..=self.attempts {
@@ -144,7 +176,7 @@ impl Pinger {
                 tokio::time::sleep(wait).await;
                 wait *= 2;
             }
-            match self.attempt(&url).await {
+            match self.attempt(&url, body.clone()).await {
                 Ok(()) => {
                     debug!("[{backup}] Ping {signal} delivered");
                     return Outcome::Delivered;
@@ -163,16 +195,19 @@ impl Pinger {
     }
 
     /// One request. On error, returns the message and whether to retry.
-    async fn attempt(&self, url: &Url) -> Result<(), (String, bool)> {
-        let request = Request::builder()
-            .method(Method::GET)
-            .uri(url.as_str())
-            .header(
-                hyper::header::USER_AGENT,
-                concat!("bacup/", env!("CARGO_PKG_VERSION")),
-            )
-            .body(Full::new(Bytes::new()))
-            .map_err(|error| (format!("invalid request: {error}"), false))?;
+    async fn attempt(&self, url: &Url, body: Option<Bytes>) -> Result<(), (String, bool)> {
+        let builder = Request::builder().uri(url.as_str()).header(
+            hyper::header::USER_AGENT,
+            concat!("bacup/", env!("CARGO_PKG_VERSION")),
+        );
+        let request = match body {
+            Some(body) => builder
+                .method(Method::POST)
+                .header(hyper::header::CONTENT_TYPE, "text/plain; charset=utf-8")
+                .body(Full::new(body)),
+            None => builder.method(Method::GET).body(Full::new(Bytes::new())),
+        }
+        .map_err(|error| (format!("invalid request: {error}"), false))?;
 
         let response = tokio::time::timeout(self.timeout, self.client.request(request))
             .await
@@ -314,20 +349,68 @@ pub(crate) mod tests {
         let p = |url: &str| Pinger::new(Url::parse(url).unwrap()).unwrap();
         let hc = p("https://hc-ping.com/0b7c1e1a-uuid");
         assert_eq!(
-            hc.target(Signal::Success).as_str(),
+            hc.target(&Signal::Success).as_str(),
             "https://hc-ping.com/0b7c1e1a-uuid"
         );
         assert_eq!(
-            hc.target(Signal::Start).as_str(),
+            hc.target(&Signal::Start).as_str(),
             "https://hc-ping.com/0b7c1e1a-uuid/start"
         );
         // A trailing slash doesn't produce an empty segment, and the query
         // string survives.
         let slash = p("https://hc-ping.com/key/slug/?create=1");
         assert_eq!(
-            slash.target(Signal::Start).as_str(),
+            slash.target(&Signal::Start).as_str(),
             "https://hc-ping.com/key/slug/start?create=1"
         );
+    }
+
+    #[test]
+    fn fail_targets_the_fail_endpoint() {
+        let hc = Pinger::new(Url::parse("https://hc-ping.com/uuid?rid=1").unwrap()).unwrap();
+        assert_eq!(
+            hc.target(&Signal::Fail(String::new())).as_str(),
+            "https://hc-ping.com/uuid/fail?rid=1"
+        );
+    }
+
+    #[test]
+    fn fail_body_masks_access_keys() {
+        let body = fail_body(
+            "InvalidAccessKeyId: key AKIAIOSFODNN7EXAMPLE not found; ASIAABCDEFGHIJKL1234",
+        );
+        assert_eq!(
+            body,
+            "InvalidAccessKeyId: key AKIA...MPLE not found; ASIA...1234"
+        );
+        // Words that merely start with AKIA are left alone.
+        assert_eq!(fail_body("AKIAshort"), "AKIAshort");
+    }
+
+    #[test]
+    fn fail_body_is_truncated_on_a_char_boundary() {
+        let long = "è".repeat(MAX_BODY);
+        let body = fail_body(&long);
+        assert!(body.len() <= MAX_BODY, "{}", body.len());
+        assert!(body.ends_with("[truncated]"));
+        let short = "step: upload";
+        assert_eq!(fail_body(short), short);
+    }
+
+    #[tokio::test]
+    async fn fail_posts_the_report() {
+        let endpoint = FakeEndpoint::start(Reply::Status(200)).await;
+        let pinger = fast(Pinger::new(endpoint.base.clone()).unwrap());
+        let report = "backup: db\nstep: dump\nerror: boom".to_string();
+        assert_eq!(
+            pinger.send(Signal::Fail(report.clone()), "t").await,
+            Outcome::Delivered
+        );
+        let requests = endpoint.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method, "POST");
+        assert_eq!(requests[0].path, "/ping/abc/fail");
+        assert_eq!(requests[0].body, report);
     }
 
     #[test]
