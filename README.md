@@ -74,6 +74,9 @@ When configuring the backups, the field **when** accepts configuration strings i
 [folders]
     [folders.service1]
     pattern = ""
+    # optional: fail the backup (instead of uploading stale data) when the
+    # newest file matched by pattern is older than this, see "Monitoring"
+    #max_age = "26h"
 
 [docker]
     [docker.service]
@@ -220,6 +223,7 @@ ping_url = "https://hc-ping.com/your-check-uuid"
 
   | step | meaning |
   |---|---|
+  | `freshness` | a folder's `max_age` check failed: its newest file is too old, or nothing matches the pattern |
   | `dump` | the service's dump failed (`pg_dump`, `docker exec`, `zfs send`, ...) |
   | `list` | the service produced nothing to back up (e.g. an empty folder) |
   | `upload`, `compress+upload` | at least one upload failed; with `compress = true` compression and upload are one step |
@@ -233,7 +237,22 @@ The monitoring service also alerts you when a success ping doesn't arrive in tim
 
 A ping never fails a backup. Each ping has a 10 s timeout and is retried up to 3 times on network errors, timeouts and HTTP 5xx; then bacup logs a warning and goes on. The URL is never written to the logs, because anyone who has it can ping your check. Keep it as private as the rest of the config.
 
-Setting up the check on healthchecks.io:
+### Stale input: `max_age`
+
+A folder backup can only upload what something else wrote there. If that writer stops (a broken cron job or timer, a full disk), bacup would upload the same old files every night without an error. To catch this, set `max_age` on the folder:
+
+```toml
+[folders.reports]
+pattern = "/var/backups/reports/"
+max_age = "6h"
+```
+
+Before each run, bacup finds the newest **file** matched by `pattern` (subfolders included, directories themselves ignored). If it is older than `max_age`, or no file matches, the run fails with step `freshness` and nothing is uploaded; with a `ping_url` you get the `/fail` report. `max_age` accepts `s`, `m`, `h` and `d` units, combinable: `"30m"`, `"26h"`, `"2d"`, `"1d 2h"`. An invalid value refuses to start.
+
+Pick `max_age` from the writer's schedule, not the backup's: the time between the writer's run and the backup, plus some margin. For a snapshot written daily at ~02:30 and backed up at 03:30, `"6h"` catches the first missed night; `"26h"` would let one missed night through (the snapshot is then ~25h old) and only fail the night after.
+
+### Setting up the check on healthchecks.io
+
 
 - **Schedule**: use the backup's `when` as a cron expression, in the UTC time zone. For example `daily 03:30` is `30 3 * * *`.
 - **Grace time**: longer than the slowest run you expect. Because of the `start` ping, the check also goes down when a run starts and doesn't succeed within the grace time (a hung upload, a crash in the middle of a run).
