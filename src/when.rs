@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::str::FromStr;
-
 use chrono::Weekday;
 use regex::Regex;
 
@@ -98,9 +96,11 @@ pub fn parse_weekly(input: &str) -> Result<String, String> {
                     input
                 ));
             }
-            // Chrono's `number_from_sunday` is ISO-8601 (Mon=2 .. Sat=7, Sun=1);
-            // cron day-of-week is Sun=0, Mon=1, ..., Sat=6, so subtract one.
-            let day = Weekday::from_str(&day.0).unwrap().number_from_sunday() - 1;
+            // Use the day name, not a number: the `cron` crate (which computes
+            // the next run) numbers days 1=Sunday..7=Saturday and rejects 0,
+            // while `croner` (which runs the job) uses 0/7=Sunday..6=Saturday.
+            // Both read MON..SUN the same way.
+            let day = day.0.to_uppercase();
 
             // sec   min   hour   day of month   month   day of week
             return Ok(format!("{} {} {} {} {} {}", 0, hm.1, hm.0, "*", "*", day));
@@ -189,6 +189,7 @@ pub fn parse_when(when: &str) -> Result<String, String> {
 mod tests {
     use super::*;
     use croner::Cron;
+    use std::str::FromStr;
 
     fn validate_cron_expression(when: &str) {
         let cron_str =
@@ -233,19 +234,43 @@ mod tests {
 
     #[test]
     fn test_parse_when_weekly_day_mapping() {
-        // cron day-of-week: 0=Sunday, 1=Monday, ..., 6=Saturday
         for (day, dow) in [
-            ("mon", "1"),
-            ("tue", "2"),
-            ("wed", "3"),
-            ("thu", "4"),
-            ("fri", "5"),
-            ("sat", "6"),
-            ("sun", "0"),
+            ("mon", "MON"),
+            ("tue", "TUE"),
+            ("wed", "WED"),
+            ("thu", "THU"),
+            ("fri", "FRI"),
+            ("sat", "SAT"),
+            ("sun", "SUN"),
+            ("weekly sunday", "SUN"),
         ] {
             let cron = parse_when(&format!("{day} 12:30")).unwrap();
             let fields: Vec<&str> = cron.split_whitespace().collect();
             assert_eq!(fields[5], dow, "wrong day-of-week for {day}: {cron}");
+        }
+    }
+
+    #[test]
+    fn test_weekly_runs_on_the_same_day_in_cron_and_croner() {
+        use chrono::Datelike;
+        let from = chrono::DateTime::parse_from_rfc3339("2026-11-22T11:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        for (day, expected) in [
+            ("weekly monday 10:00", Weekday::Mon),
+            ("weekly saturday 10:00", Weekday::Sat),
+            ("weekly sunday 10:00", Weekday::Sun),
+        ] {
+            let expr = parse_when(day).unwrap();
+            let schedule = cron::Schedule::from_str(&expr)
+                .unwrap_or_else(|e| panic!("cron rejects {}: {}", expr, e));
+            let next = schedule.after(&from).next().unwrap();
+            assert_eq!(next.weekday(), expected, "cron, {}", day);
+            let next = Cron::from_str(&expr)
+                .unwrap()
+                .find_next_occurrence(&from, false)
+                .unwrap();
+            assert_eq!(next.weekday(), expected, "croner, {}", day);
         }
     }
 
