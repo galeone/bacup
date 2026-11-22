@@ -584,7 +584,7 @@ dependencies = [
 
 [[package]]
 name = "bacup"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "astral-tokio-tar",
  "async-compression",
